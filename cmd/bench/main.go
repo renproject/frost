@@ -9,18 +9,17 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/pkg/profile"
 	"github.com/renproject/frost"
 	"github.com/renproject/secp256k1"
 	"github.com/renproject/shamir"
 )
 
 func main() {
-	defer profile.Start().Stop()
+	// defer profile.Start().Stop()
 
 	rand.Seed(time.Now().UnixNano())
 
-	n := 3000
+	n := 30
 	t := n / 2
 
 	indices := sequentialIndices(n)
@@ -56,6 +55,7 @@ func main() {
 		panic("invalid signature!")
 	} else {
 		filename := fmt.Sprintf("%v-%v.metrics", n, t)
+		fmt.Println("success! writing metrics to", filename)
 		reportMetrics(&aggregator, players, filename)
 	}
 }
@@ -164,7 +164,7 @@ func executeThresholdSignature(aggregator *sa, players []player, msgHash [32]byt
 		if m.to == 0 {
 			aggregator.metrics.recordMsgReceipt(m.msg)
 
-			done, r, s, haveMsg, newMsg := aggregator.handle(m.msg, m.from)
+			done, r, s, haveMsg, newMsg := aggregator.handle(m)
 
 			if done {
 				var buf [32]byte
@@ -195,7 +195,7 @@ func executeThresholdSignature(aggregator *sa, players []player, msgHash [32]byt
 			player := &players[m.to-1]
 			player.metrics.recordMsgReceipt(m.msg)
 
-			newMsg := player.handle(m.msg)
+			newMsg := player.handle(m)
 			msgQueue.push(message{from: player.index, to: 0, msg: newMsg})
 			player.metrics.recordMsgSend(newMsg)
 		}
@@ -235,9 +235,9 @@ type player struct {
 	nonce frost.Nonce
 }
 
-func (p *player) handle(msg frost.Message) frost.Message {
+func (p *player) handle(m message) frost.Message {
 	start := time.Now()
-	msg, err := frost.Handle(msg, &p.state, p.index, &p.privKeyShare, &p.pubKey, p.n, p.t)
+	msg, err := frost.Handle(m.msg, &p.state, p.index, &p.privKeyShare, &p.pubKey, p.n, p.t, m.from == 0)
 	time := time.Since(start)
 	if err != nil {
 		panic(err)
@@ -257,9 +257,9 @@ type sa struct {
 	state frost.SAState
 }
 
-func (s *sa) handle(msg frost.Message, from uint16) (bool, secp256k1.Point, secp256k1.Fn, bool, frost.Message) {
+func (s *sa) handle(m message) (bool, secp256k1.Point, secp256k1.Fn, bool, frost.Message) {
 	start := time.Now()
-	done, r, z, newMsg, msg, err := frost.SAHandleMessage(msg, from, &s.state, &s.aggregatedPubKey, s.params)
+	done, r, z, newMsg, msg, err := frost.SAHandleMessage(m.msg, m.from, &s.state, &s.aggregatedPubKey, s.params)
 	time := time.Since(start)
 	if err != nil {
 		panic(err)

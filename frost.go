@@ -3,6 +3,7 @@ package frost
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash"
 	"sort"
@@ -48,19 +49,19 @@ type IndexedZ struct {
 }
 
 type SAState struct {
-	IndexedCommitments []IndexedCommitment
-	IndexedZs          []IndexedZ
-	ZsReceived         int
+	IndexedCommitments  []IndexedCommitment
+	CommitmentsReceived int
+	IndexedZs           []IndexedZ
+	ZsReceived          int
 
-	// TODO(ross): Separate struct for memory/buffer variables?
 	HashBuffer []byte
 	RsBuffer   []secp256k1.Point
 }
 
 func NewSAState(t int) SAState {
-	indexedCommitments := make([]IndexedCommitment, 0, t)
+	indexedCommitments := make([]IndexedCommitment, t)
 	indexedZs := make([]IndexedZ, t)
-	hashBuffer := make([]byte, 0, 32+t*(2*secp256k1.PointSizeMarshalled+2))
+	hashBuffer := make([]byte, 32+t*(2*secp256k1.PointSizeMarshalled+2))
 	rsBuffer := make([]secp256k1.Point, t)
 
 	return SAState{
@@ -74,14 +75,26 @@ func NewSAState(t int) SAState {
 }
 
 func (s *SAState) Reset(msgHash [32]byte) {
-	s.IndexedCommitments = s.IndexedCommitments[:0]
-	s.HashBuffer = s.HashBuffer[:32]
+	// NOTE: This will apparently produce optimised code. See
+	// https://github.com/golang/go/commit/f03c9202c43e0abb130669852082117ca50aa9b1
+	for i := range s.HashBuffer {
+		s.HashBuffer[i] = 0
+	}
 	copy(s.HashBuffer, msgHash[:])
+
+	// @Performance: Does this produce optimized code as in the case of the
+	// byte slice above? Probably not. If not, can we do anything about that?
+	for i := range s.IndexedCommitments {
+		s.IndexedCommitments[i] = IndexedCommitment{}
+	}
+
+	s.CommitmentsReceived = 0
 	s.ZsReceived = 0
 }
 
 type State struct {
 	Nonce
+	Done bool
 }
 
 type InstanceParameters struct {
@@ -122,8 +135,7 @@ func NewInstanceParameters(inds []uint16, allPubKeyShares []secp256k1.Point) Ins
 	return InstanceParameters{Indices: indices, PubKeyShares: pubKeyShares}
 }
 
-// TODO(ross): Check that we only receive exactly one message from each index.
-func SAHandleCommitment(state *SAState, from uint16, commitmentBytes []byte) error {
+func SAHandleCommitment(state *SAState, indices []uint16, from uint16, commitmentBytes []byte) error {
 	if len(commitmentBytes) != 2*secp256k1.PointSizeMarshalled {
 		return fmt.Errorf("serialised commitment length invalid: expected %v, got %v", 2*secp256k1.PointSizeMarshalled, len(commitmentBytes))
 	}
@@ -142,22 +154,28 @@ func SAHandleCommitment(state *SAState, from uint16, commitmentBytes []byte) err
 		return err
 	}
 
-	state.HashBuffer = state.HashBuffer[:len(state.HashBuffer)+2]
-	binary.LittleEndian.PutUint16(state.HashBuffer[len(state.HashBuffer)-2:], from)
+	offset := offsetOfPlayer(from, indices)
+	baseIndex := 32 + offset*(2+2*secp256k1.PointSizeMarshalled)
 
-	// NOTE(ross): The docs suggest that if the slice has capacity, then it
-	// should just reslice (and then copy?). I am assuming that this is what
-	// happens here with performance in mind.
-	state.HashBuffer = append(state.HashBuffer, commitmentBytes[:secp256k1.PointSizeMarshalled]...)
-	state.HashBuffer = append(state.HashBuffer, commitmentBytes[secp256k1.PointSizeMarshalled:]...)
+	// If the commitment is unset, then the player index in the buffer will be
+	// zero.
+	alreadyHaveCommitment := state.HashBuffer[baseIndex] != 0x0 || state.HashBuffer[baseIndex+1] != 0x0
+	if alreadyHaveCommitment {
+		return fmt.Errorf("already received commitment from player %v", from)
+	}
 
-	state.IndexedCommitments = append(state.IndexedCommitments, commitment)
+	binary.LittleEndian.PutUint16(state.HashBuffer[baseIndex:], from)
+
+	copy(state.HashBuffer[baseIndex+2:], commitmentBytes[:secp256k1.PointSizeMarshalled])
+	copy(state.HashBuffer[baseIndex+2+secp256k1.PointSizeMarshalled:], commitmentBytes[secp256k1.PointSizeMarshalled:])
+
+	state.IndexedCommitments[offset] = commitment
+	state.CommitmentsReceived++
 
 	return nil
 }
 
-// TODO(ross): Check that we only receive exactly one message from each index.
-func SAHandleZ(state *SAState, from uint16, zBytes []byte) error {
+func SAHandleZ(state *SAState, indices []uint16, from uint16, zBytes []byte) error {
 	if len(zBytes) != 32 {
 		return fmt.Errorf("invalid z encoding length: expected 32, got %v", len(zBytes))
 	}
@@ -165,18 +183,27 @@ func SAHandleZ(state *SAState, from uint16, zBytes []byte) error {
 	var z secp256k1.Fn
 	z.SetB32(zBytes)
 
-	// @Performance: We need to make sure that our stored z, commitment and R
-	// values are in the same order w.r.t the indices. There would surely be a
-	// faster way to do this than the below, probably involving some
-	// precomputation based on the known subset of indices.
-	for i, commitment := range state.IndexedCommitments {
-		if commitment.Index == from {
-			state.IndexedZs[i] = IndexedZ{Index: from, Z: z}
-			state.ZsReceived++
+	offset := offsetOfPlayer(from, indices)
+
+	alreadyHaveZ := state.IndexedZs[offset].Index != 0
+	if alreadyHaveZ {
+		return fmt.Errorf("already have z from player %v", from)
+	}
+
+	state.IndexedZs[offset] = IndexedZ{Index: from, Z: z}
+	state.ZsReceived++
+
+	return nil
+}
+
+func offsetOfPlayer(player uint16, players []uint16) int {
+	for i, index := range players {
+		if index == player {
+			return i
 		}
 	}
 
-	return nil
+	panic(fmt.Sprintf("unable to find player %v in the list of players", player))
 }
 
 func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Point, indices []uint16, requireEvenY bool) (secp256k1.Point, secp256k1.Fn, error) {
@@ -209,22 +236,22 @@ func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Poin
 
 	switch msg.Type {
 	case TypeCommitment:
-		err := SAHandleCommitment(state, from, msg.Data)
+		err := SAHandleCommitment(state, params.Indices, from, msg.Data)
 		if err != nil {
 			return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("error handling commitment: %v", err)
 		}
 
-		contributionBytes := make([]byte, len(state.HashBuffer))
-		copy(contributionBytes, state.HashBuffer)
+		if state.CommitmentsReceived == t {
+			contributionBytes := make([]byte, len(state.HashBuffer))
+			copy(contributionBytes, state.HashBuffer)
 
-		if len(state.IndexedCommitments) == t {
 			return false, secp256k1.Point{}, secp256k1.Fn{}, true, Message{Type: TypeContributions, Data: contributionBytes}, nil
 		} else {
 			return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, nil
 		}
 
 	case TypeZ:
-		err := SAHandleZ(state, from, msg.Data)
+		err := SAHandleZ(state, params.Indices, from, msg.Data)
 		if err != nil {
 			return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("error handling z: %v", err)
 		}
@@ -340,9 +367,20 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 	return z, nil
 }
 
-// TODO(ross): This currently assumes that the message comes from the signature
-// aggregator. Do we want this assumption to be ensured by the caller?
-func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn, y *secp256k1.Point, n, t int) (Message, error) {
+func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn, y *secp256k1.Point, n, t int, isFromAggregator bool) (Message, error) {
+	// @Design: This obviously looks like a weird approach to not accepting
+	// messages that aren't from the aggregator. The reasoning is: we do not
+	// want to assume what "network" form the identities of the players assume,
+	// but it is necessary to know this to be able to check if the message is
+	// coming from the current aggregator, which implies that this check needs
+	// to exist at a higher level. But on the other hand, this check is
+	// potentially important, so we want to ensure that it happens. This
+	// current approach at a minimum gives a compile time reminder to a caller
+	// of this function that the check needs to occur.
+	if !isFromAggregator {
+		return Message{}, errors.New("message does not come from aggregator")
+	}
+
 	switch msg.Type {
 	case TypeCommitmentRequest:
 		if state.Nonce != (Nonce{}) {
@@ -351,7 +389,7 @@ func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn,
 			// Returning an error in this case implies that it is the
 			// responsibility of the caller of this function to reset the
 			// player state when a new aggregator is selected.
-			return Message{}, fmt.Errorf("already handled a commitment request")
+			return Message{}, errors.New("already handled a commitment request")
 		}
 
 		nonce, commitment := RandomNonceCommitmentPair()
@@ -364,17 +402,16 @@ func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn,
 		return Message{Type: TypeCommitment, Data: commitmentBytes[:]}, nil
 
 	case TypeContributions:
-		// TODO(ross): Decide how to handle duplicate contributions if we need
-		// to filter that out here. In theory the caller is aware that after
-		// handling a contribution (that is valid) it doesn't need to do any
-		// more work and just needs to wait for the aggregator to gossip the
-		// completed signature, so the caller can know to ignore future
-		// contributions for the same signature.
+		if state.Done {
+			return Message{}, errors.New("already handled contributions")
+		}
 
 		z, err := HandleSAProposal(&state.Nonce, privKeyShare, y, index, n, t, msg.Data, true)
 		if err != nil {
 			return Message{}, err
 		}
+
+		state.Done = true
 
 		var zBytes [32]byte
 		z.PutB32(zBytes[:])
