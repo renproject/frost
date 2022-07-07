@@ -8,7 +8,6 @@ import (
 	"hash"
 	"sort"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/renproject/secp256k1"
 )
 
@@ -494,7 +493,7 @@ func computeC(r, y *secp256k1.Point, message []byte) secp256k1.Fn {
 	r.PutBytes(rBytes[:])
 	y.PutBytes(yBytes[:])
 
-	hash := chainhash.TaggedHash(chainhash.TagBIP0340Challenge, rBytes[1:], yBytes[1:], message)
+	hash := taggedHash(rBytes[1:], yBytes[1:], message)
 
 	c := secp256k1.Fn{}
 	c.SetB32(hash[:])
