@@ -10,7 +10,7 @@ import "crypto/sha256"
 
 var tagHash = sha256.Sum256([]byte("BIP0340/challenge"))
 
-func taggedHash(msgs ...[]byte) []byte {
+func TaggedHash(msgs ...[]byte) []byte {
 	// h = sha256(sha256(tag) || sha256(tag) || msg)
 	h := sha256.New()
 	h.Write(tagHash[:])

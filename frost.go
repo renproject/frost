@@ -493,7 +493,7 @@ func computeC(r, y *secp256k1.Point, message []byte) secp256k1.Fn {
 	r.PutBytes(rBytes[:])
 	y.PutBytes(yBytes[:])
 
-	hash := taggedHash(rBytes[1:], yBytes[1:], message)
+	hash := TaggedHash(rBytes[1:], yBytes[1:], message)
 
 	c := secp256k1.Fn{}
 	c.SetB32(hash[:])
