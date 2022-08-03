@@ -205,6 +205,9 @@ func offsetOfPlayer(player uint16, players []uint16) int {
 	panic(fmt.Sprintf("unable to find player %v in the list of players", player))
 }
 
+// TODO(ross): `requireEvenY` is vague. Make this more explicit with some kind
+// of option - what we're really doing is toggling whether we want to support
+// BIP340 signatures.
 func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Point, indices []uint16, requireEvenY bool) (secp256k1.Point, secp256k1.Fn, error) {
 	r := computeAllRs(state.RsBuffer, state.IndexedCommitments, state.HashBuffer)
 	rHasEvenY := hasEvenY(&r)
@@ -256,6 +259,7 @@ func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Poin
 		}
 
 		if state.ZsReceived == t {
+			// TODO(ross): Use an option variable instead of hardcoded boolean.
 			r, s, err := SAComputeSignature(state, y, params.PubKeyShares, params.Indices, true)
 			if err != nil {
 				return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("error computing signature: %v", err)
@@ -281,6 +285,9 @@ func RandomNonceCommitmentPair() (Nonce, Commitment) {
 	return Nonce{D: d, E: e}, Commitment{D: gd, E: ge}
 }
 
+// TODO(ross): `requireEvenY` is vague. Make this more explicit with some kind
+// of option - what we're really doing is toggling whether we want to support
+// BIP340 signatures.
 // Assumed message format:
 // - [0:32] message hash
 // - [32:]  list of commitments, no length prefix
@@ -306,7 +313,7 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 	// This requies us to allocate our memory up front (we don't want
 	// reallocations from resizing a small slice).  Therefore a malicious
 	// player could cause us to do this (potentially large) allocation work
-	// unnecessarily.  We might want to do a first pass over the message bytes
+	// unnecessarily. We might want to do a first pass over the message bytes
 	// to make sure that the curve points (and indices too probably) are valid,
 	// and then we can allocate knowing that it will not be wasted work. This
 	// will probably involve a new method for the `secp256k1.Point` type that
@@ -383,11 +390,10 @@ func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn,
 	switch msg.Type {
 	case TypeCommitmentRequest:
 		if state.Nonce != (Nonce{}) {
-			// TODO(ross): Need to think about how to handle switching to a new
-			// aggregator if the first one doesn't complete within the timeout.
-			// Returning an error in this case implies that it is the
-			// responsibility of the caller of this function to reset the
-			// player state when a new aggregator is selected.
+			// NOTE(ross): If we want to reuse resources (i.e. the `State`)
+			// then returning an error here implies that it is the
+			// responsibility of the user of the `frost` package to reset the
+			// state before using it again.
 			return Message{}, errors.New("already handled a commitment request")
 		}
 
@@ -405,6 +411,7 @@ func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn,
 			return Message{}, errors.New("already handled contributions")
 		}
 
+		// TODO(ross): Use an option variable instead of hardcoded boolean.
 		z, err := HandleSAProposal(&state.Nonce, privKeyShare, y, index, n, t, msg.Data, true)
 		if err != nil {
 			return Message{}, err
