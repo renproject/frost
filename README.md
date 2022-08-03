@@ -1,4 +1,4 @@
-#Frost
+# Frost
 
 Implementation of FROST multiparty signatures, in go. Paper can be accessed online [here](https://eprint.iacr.org/2020/852.pdf).
 
