@@ -49,6 +49,8 @@ github.com/onsi/gomega v1.19.0/go.mod h1:LY+I3pBVzYsTBU1AnDwOSxaYi9WoWiqgwooUqq9
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/renproject/secp256k1 v0.0.0-20220707021023-f849b5f8a3c6 h1:Hf4TToOy3apEZ3jWN6l3bm3fkMUMYLdoJb66E2ouRPE=
 github.com/renproject/secp256k1 v0.0.0-20220707021023-f849b5f8a3c6/go.mod h1:Era4/eG42Iwo4VU/AP3h7WBSONOazmvmtuOntwAbAsc=
+github.com/renproject/secp256k1 v0.0.0-20220804125954-f6aa38babc99 h1:fMh/tdKUMGMX3p60scOYNW4AaSg5VyicrWtVdNyBTqg=
+github.com/renproject/secp256k1 v0.0.0-20220804125954-f6aa38babc99/go.mod h1:Era4/eG42Iwo4VU/AP3h7WBSONOazmvmtuOntwAbAsc=
 github.com/renproject/surge v1.2.3/go.mod h1:jNVsKCM3/2PAllkc2cx7g2saG9NrHRX5x20I/TDMXOs=
 github.com/renproject/surge v1.2.7 h1:dooK41jCKENv7Sw/evH1zl6+1xN105wH14sPGAag0ZA=
 github.com/renproject/surge v1.2.7/go.mod h1:jKRy1o6KtmDPIcb5g8iwyEZfcjlFUksNqhs9sy6NSRU=

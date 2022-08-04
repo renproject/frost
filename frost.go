@@ -207,14 +207,14 @@ func offsetOfPlayer(player uint16, players []uint16) int {
 
 func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Point, indices []uint16, bip340 bool) (secp256k1.Point, secp256k1.Fn, error) {
 	r := computeAllRs(state.RsBuffer, state.IndexedCommitments, state.HashBuffer)
-	rHasEvenY := hasEvenY(&r)
+	rHasEvenY := r.HasEvenY()
 
 	msgHash := state.HashBuffer[:32]
-	c := computeC(&r, y, msgHash)
+	c := computeC(&r, y, msgHash, bip340)
 
 	for i, yi := range yis {
 		if bip340 && !rHasEvenY {
-			negatePoint(&state.RsBuffer[i])
+			state.RsBuffer[i].Negate(&state.RsBuffer[i])
 		}
 
 		if !validateZ(state.IndexedZs[i].Index, indices, &state.IndexedZs[i].Z, &c, &state.RsBuffer[i], &yi) {
@@ -356,11 +356,11 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 	}
 
 	r, rho := computeRAndRho(commitments, msgBytes, index)
-	if bip340 && !hasEvenY(&r) {
+	if bip340 && !r.HasEvenY() {
 		nonce.D.Negate(&nonce.D)
 		nonce.E.Negate(&nonce.E)
 	}
-	c := computeC(&r, y, msgHash)
+	c := computeC(&r, y, msgHash, bip340)
 	z := computeZ(index, indices, &nonce.D, &nonce.E, &rho, si, &c)
 
 	return z, nil
@@ -484,20 +484,33 @@ func computeRLoopStep(commitment IndexedCommitment, hasher hash.Hash, msgAndComm
 	}
 }
 
-func computeC(r, y *secp256k1.Point, message []byte) secp256k1.Fn {
-	// @Performance: Ideally we have a method on the `Point` type that allows
-	// us to directly serialise only the x coordinate.
+func computeC(r, y *secp256k1.Point, message []byte, bip340 bool) secp256k1.Fn {
 	var rBytes, yBytes [33]byte
 
 	r.PutBytes(rBytes[:])
 	y.PutBytes(yBytes[:])
 
-	hash := TaggedHash(rBytes[1:], yBytes[1:], message)
+	var hash []byte
+
+	if bip340 {
+		hash = TaggedHash(rBytes[1:], yBytes[1:], message)
+	} else {
+		hash = CHash(rBytes[:], yBytes[:], message)
+	}
 
 	c := secp256k1.Fn{}
-	c.SetB32(hash[:])
+	c.SetB32(hash)
 
 	return c
+}
+
+func CHash(rBytes, yBytes, message []byte) []byte {
+	h := sha256.New()
+	h.Write(rBytes[1:])
+	h.Write(yBytes[1:])
+	h.Write(message)
+
+	return h.Sum(nil)
 }
 
 func computeZ(i uint16, indices []uint16, di, ei, rhoi, si, c *secp256k1.Fn) secp256k1.Fn {
@@ -553,27 +566,4 @@ func lagrangeCoefficient(i uint16, indices []uint16) secp256k1.Fn {
 	numerator.Mul(&numerator, &denominator)
 
 	return numerator
-}
-
-// TODO(ross): This should be probably be defined in the secp256k1 package (and
-// there might be a more efficient implementation possible there.
-func negatePoint(p *secp256k1.Point) {
-	x, y, err := p.XY()
-	if err != nil {
-		panic(err)
-	}
-
-	y.Negate(&y)
-	p.SetXY(&x, &y)
-}
-
-// TODO(ross): This should be probably be defined in the secp256k1 package (and
-// there might be a more efficient implementation possible there.
-func hasEvenY(p *secp256k1.Point) bool {
-	_, y, err := p.XY()
-	if err != nil {
-		panic(err)
-	}
-
-	return y.IsEven()
 }
