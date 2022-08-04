@@ -205,10 +205,7 @@ func offsetOfPlayer(player uint16, players []uint16) int {
 	panic(fmt.Sprintf("unable to find player %v in the list of players", player))
 }
 
-// TODO(ross): `requireEvenY` is vague. Make this more explicit with some kind
-// of option - what we're really doing is toggling whether we want to support
-// BIP340 signatures.
-func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Point, indices []uint16, requireEvenY bool) (secp256k1.Point, secp256k1.Fn, error) {
+func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Point, indices []uint16, bip340 bool) (secp256k1.Point, secp256k1.Fn, error) {
 	r := computeAllRs(state.RsBuffer, state.IndexedCommitments, state.HashBuffer)
 	rHasEvenY := hasEvenY(&r)
 
@@ -216,7 +213,7 @@ func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Poin
 	c := computeC(&r, y, msgHash)
 
 	for i, yi := range yis {
-		if requireEvenY && !rHasEvenY {
+		if bip340 && !rHasEvenY {
 			negatePoint(&state.RsBuffer[i])
 		}
 
@@ -233,7 +230,7 @@ func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Poin
 	return r, z, nil
 }
 
-func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Point, params InstanceParameters) (bool, secp256k1.Point, secp256k1.Fn, bool, Message, error) {
+func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Point, params InstanceParameters, bip340 bool) (bool, secp256k1.Point, secp256k1.Fn, bool, Message, error) {
 	t := len(params.Indices)
 
 	switch msg.Type {
@@ -259,8 +256,7 @@ func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Poin
 		}
 
 		if state.ZsReceived == t {
-			// TODO(ross): Use an option variable instead of hardcoded boolean.
-			r, s, err := SAComputeSignature(state, y, params.PubKeyShares, params.Indices, true)
+			r, s, err := SAComputeSignature(state, y, params.PubKeyShares, params.Indices, bip340)
 			if err != nil {
 				return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("error computing signature: %v", err)
 			}
@@ -285,15 +281,12 @@ func RandomNonceCommitmentPair() (Nonce, Commitment) {
 	return Nonce{D: d, E: e}, Commitment{D: gd, E: ge}
 }
 
-// TODO(ross): `requireEvenY` is vague. Make this more explicit with some kind
-// of option - what we're really doing is toggling whether we want to support
-// BIP340 signatures.
 // Assumed message format:
 // - [0:32] message hash
 // - [32:]  list of commitments, no length prefix
 // We assume that the commitments are ordered by their index in ascending
 // order. It is the responsibility of the SA to have the list sorted thusly.
-func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index uint16, n, t int, msgBytes []byte, requireEvenY bool) (secp256k1.Fn, error) {
+func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index uint16, n, t int, msgBytes []byte, bip340 bool) (secp256k1.Fn, error) {
 	byteScanner := msgBytes
 	msgHash := byteScanner[:32]
 	byteScanner = byteScanner[32:]
@@ -363,7 +356,7 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 	}
 
 	r, rho := computeRAndRho(commitments, msgBytes, index)
-	if requireEvenY && !hasEvenY(&r) {
+	if bip340 && !hasEvenY(&r) {
 		nonce.D.Negate(&nonce.D)
 		nonce.E.Negate(&nonce.E)
 	}
@@ -373,7 +366,7 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 	return z, nil
 }
 
-func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn, y *secp256k1.Point, n, t int, isFromAggregator bool) (Message, error) {
+func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn, y *secp256k1.Point, n, t int, isFromAggregator bool, bip340 bool) (Message, error) {
 	// @Design: This obviously looks like a weird approach to not accepting
 	// messages that aren't from the aggregator. The reasoning is: we do not
 	// want to assume what "network" form the identities of the players assume,
@@ -411,8 +404,7 @@ func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn,
 			return Message{}, errors.New("already handled contributions")
 		}
 
-		// TODO(ross): Use an option variable instead of hardcoded boolean.
-		z, err := HandleSAProposal(&state.Nonce, privKeyShare, y, index, n, t, msg.Data, true)
+		z, err := HandleSAProposal(&state.Nonce, privKeyShare, y, index, n, t, msg.Data, bip340)
 		if err != nil {
 			return Message{}, err
 		}
