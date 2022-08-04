@@ -237,7 +237,7 @@ type player struct {
 
 func (p *player) handle(m message) frost.Message {
 	start := time.Now()
-	msg, err := frost.Handle(m.msg, &p.state, p.index, &p.privKeyShare, &p.pubKey, p.n, p.t, m.from == 0)
+	msg, err := frost.Handle(m.msg, &p.state, p.index, &p.privKeyShare, &p.pubKey, p.n, p.t, m.from == 0, true)
 	time := time.Since(start)
 	if err != nil {
 		panic(err)
@@ -259,7 +259,7 @@ type sa struct {
 
 func (s *sa) handle(m message) (bool, secp256k1.Point, secp256k1.Fn, bool, frost.Message) {
 	start := time.Now()
-	done, r, z, newMsg, msg, err := frost.SAHandleMessage(m.msg, m.from, &s.state, &s.aggregatedPubKey, s.params)
+	done, r, z, newMsg, msg, err := frost.SAHandleMessage(m.msg, m.from, &s.state, &s.aggregatedPubKey, s.params, true)
 	time := time.Since(start)
 	if err != nil {
 		panic(err)

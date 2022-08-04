@@ -297,6 +297,8 @@ github.com/prometheus/procfs v0.0.2/go.mod h1:TjEm7ze935MbeOT/UhFTIMYKhuLP4wbCsT
 github.com/prometheus/tsdb v0.7.1/go.mod h1:qhTCs0VvXwvX/y3TZrWD7rabWM+ijKTux40TwIPHuXU=
 github.com/renproject/frost v0.0.0-20220707021556-aa945a1d944c h1:telVdPx100cJqepWHydpPvN1mSx8IKXctO3EYVog6sA=
 github.com/renproject/frost v0.0.0-20220707021556-aa945a1d944c/go.mod h1:S1P8rmDrXw57hs3wFs+7qfBpITOFIbHu62A2ouwSEFY=
+github.com/renproject/frost v0.0.0-20220804090552-c62d24c8d6b9 h1:8xhEeUjYMXgGSAwCpyzEqY3187J8d+1UZbds3fXQ3z0=
+github.com/renproject/frost v0.0.0-20220804090552-c62d24c8d6b9/go.mod h1:Ir0PmH70j1KYqzBEG6nQfc+swAFqdk167E9AWvYB9KQ=
 github.com/renproject/secp256k1 v0.0.0-20220706234008-1de602678386/go.mod h1:xsTzuBpcaG4B4BsD8rJHtvR+8MP1K3tYPSbCqqmUNjc=
 github.com/renproject/secp256k1 v0.0.0-20220707021023-f849b5f8a3c6 h1:Hf4TToOy3apEZ3jWN6l3bm3fkMUMYLdoJb66E2ouRPE=
 github.com/renproject/secp256k1 v0.0.0-20220707021023-f849b5f8a3c6/go.mod h1:Era4/eG42Iwo4VU/AP3h7WBSONOazmvmtuOntwAbAsc=
