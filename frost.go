@@ -87,6 +87,10 @@ func (s *SAState) Reset(msgHash [32]byte) {
 		s.IndexedCommitments[i] = IndexedCommitment{}
 	}
 
+	for i := range s.IndexedZs {
+		s.IndexedZs[i] = IndexedZ{}
+	}
+
 	s.CommitmentsReceived = 0
 	s.ZsReceived = 0
 }
@@ -208,6 +212,10 @@ func offsetOfPlayer(player uint16, players []uint16) int {
 func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Point, indices []uint16, bip340 bool) (secp256k1.Point, secp256k1.Fn, error) {
 	r := computeAllRs(state.RsBuffer, state.IndexedCommitments, state.HashBuffer)
 	rHasEvenY := r.HasEvenY()
+
+	if !rHasEvenY {
+		r.Negate(&r)
+	}
 
 	msgHash := state.HashBuffer[:32]
 	c := computeC(&r, y, msgHash, bip340)
@@ -359,6 +367,7 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 	if bip340 && !r.HasEvenY() {
 		nonce.D.Negate(&nonce.D)
 		nonce.E.Negate(&nonce.E)
+		r.Negate(&r)
 	}
 	c := computeC(&r, y, msgHash, bip340)
 	z := computeZ(index, indices, &nonce.D, &nonce.E, &rho, si, &c)
@@ -506,8 +515,8 @@ func computeC(r, y *secp256k1.Point, message []byte, bip340 bool) secp256k1.Fn {
 
 func CHash(rBytes, yBytes, message []byte) []byte {
 	h := sha256.New()
-	h.Write(rBytes[1:])
-	h.Write(yBytes[1:])
+	h.Write(rBytes)
+	h.Write(yBytes)
 	h.Write(message)
 
 	return h.Sum(nil)
