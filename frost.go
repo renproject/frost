@@ -213,7 +213,7 @@ func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Poin
 	r := computeAllRs(state.RsBuffer, state.IndexedCommitments, state.HashBuffer)
 	rHasEvenY := r.HasEvenY()
 
-	if !rHasEvenY {
+	if bip340 && !rHasEvenY {
 		r.Negate(&r)
 	}
 
