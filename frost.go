@@ -138,7 +138,7 @@ func NewInstanceParameters(inds []uint16, allPubKeyShares []secp256k1.Point) Ins
 	return InstanceParameters{Indices: indices, PubKeyShares: pubKeyShares}
 }
 
-func SAHandleCommitment(state *SAState, indices []uint16, from uint16, commitmentBytes []byte) error {
+func SAHandleCommitment(state *SAState, offset int, from uint16, commitmentBytes []byte) error {
 	if len(commitmentBytes) != 2*secp256k1.PointSizeMarshalled {
 		return fmt.Errorf("serialised commitment length invalid: expected %v, got %v", 2*secp256k1.PointSizeMarshalled, len(commitmentBytes))
 	}
@@ -149,15 +149,14 @@ func SAHandleCommitment(state *SAState, indices []uint16, from uint16, commitmen
 
 	err := commitment.D.SetBytes(commitmentBytes)
 	if err != nil {
-		return err
+		return fmt.Errorf("error deserialising d: %v", err)
 	}
 
 	err = commitment.E.SetBytes(commitmentBytes[secp256k1.PointSizeMarshalled:])
 	if err != nil {
-		return err
+		return fmt.Errorf("error deserialising e: %v", err)
 	}
 
-	offset := offsetOfPlayer(from, indices)
 	baseIndex := 32 + offset*(2+2*secp256k1.PointSizeMarshalled)
 
 	// If the commitment is unset, then the player index in the buffer will be
@@ -178,15 +177,13 @@ func SAHandleCommitment(state *SAState, indices []uint16, from uint16, commitmen
 	return nil
 }
 
-func SAHandleZ(state *SAState, indices []uint16, from uint16, zBytes []byte) error {
+func SAHandleZ(state *SAState, offset int, from uint16, zBytes []byte) error {
 	if len(zBytes) != 32 {
 		return fmt.Errorf("invalid z encoding length: expected 32, got %v", len(zBytes))
 	}
 
 	var z secp256k1.Fn
 	z.SetB32(zBytes)
-
-	offset := offsetOfPlayer(from, indices)
 
 	alreadyHaveZ := state.IndexedZs[offset].Index != 0
 	if alreadyHaveZ {
@@ -206,7 +203,7 @@ func offsetOfPlayer(player uint16, players []uint16) int {
 		}
 	}
 
-	panic(fmt.Sprintf("unable to find player %v in the list of players", player))
+	return -1
 }
 
 func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Point, indices []uint16, bip340 bool) (secp256k1.Point, secp256k1.Fn, error) {
@@ -241,9 +238,14 @@ func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Poin
 func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Point, params InstanceParameters, bip340 bool) (bool, secp256k1.Point, secp256k1.Fn, bool, Message, error) {
 	t := len(params.Indices)
 
+	offset := offsetOfPlayer(from, params.Indices)
+	if offset < 0 {
+		return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("received message from player not in subset: type: %v, from: %v", msg.Type, from)
+	}
+
 	switch msg.Type {
 	case TypeCommitment:
-		err := SAHandleCommitment(state, params.Indices, from, msg.Data)
+		err := SAHandleCommitment(state, offset, from, msg.Data)
 		if err != nil {
 			return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("error handling commitment: %v", err)
 		}
@@ -258,7 +260,7 @@ func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Poin
 		}
 
 	case TypeZ:
-		err := SAHandleZ(state, params.Indices, from, msg.Data)
+		err := SAHandleZ(state, offset, from, msg.Data)
 		if err != nil {
 			return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("error handling z: %v", err)
 		}
@@ -295,21 +297,16 @@ func RandomNonceCommitmentPair() (Nonce, Commitment) {
 // We assume that the commitments are ordered by their index in ascending
 // order. It is the responsibility of the SA to have the list sorted thusly.
 func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index uint16, n, t int, msgBytes []byte, bip340 bool) (secp256k1.Fn, error) {
+	commitmentSize := 2 + 2*secp256k1.PointSizeMarshalled
+	if len(msgBytes) != commitmentSize*t+32 {
+		return secp256k1.Fn{}, fmt.Errorf("invalid commitment list size %v should be %v", len(msgBytes), commitmentSize*t+32)
+	}
+
 	byteScanner := msgBytes
 	msgHash := byteScanner[:32]
 	byteScanner = byteScanner[32:]
 
-	commitmentSize := 2 + 2*secp256k1.PointSizeMarshalled
-	if len(byteScanner)%commitmentSize != 0 {
-		return secp256k1.Fn{}, fmt.Errorf("invalid commitment list size %v should be divisible by %v", len(byteScanner), commitmentSize)
-	}
-
-	subsetSize := len(byteScanner) / commitmentSize
-	if subsetSize < t || n < subsetSize {
-		return secp256k1.Fn{}, fmt.Errorf("invalid number of commitments %v: expected a number between t = %v and n = %v", subsetSize, t, n)
-	}
-
-	// @Safety: The following iterates through the message bytes at for each
+	// @Safety: The following iterates through the message bytes and for each
 	// commitment checks that it is valid and then deserialises into our type.
 	// This requies us to allocate our memory up front (we don't want
 	// reallocations from resizing a small slice).  Therefore a malicious
@@ -320,15 +317,15 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 	// will probably involve a new method for the `secp256k1.Point` type that
 	// can do this check, as the current approach of simply deserialising and
 	// then checking the error does extra unnecessary work.
-	commitments := make([]IndexedCommitment, subsetSize)
+	commitments := make([]IndexedCommitment, t)
 
 	// @Performance: We might want to take some preallocated memory as an
 	// argument to avoid doing an allocation here evey time. The same applies
 	// to the above allocation.
-	indices := make([]uint16, 0, subsetSize)
+	indices := make([]uint16, 0, t)
 
 	var prevInd, currInd uint16
-	for i := 0; i < subsetSize; i++ {
+	for i := 0; i < t; i++ {
 		ind := binary.LittleEndian.Uint16(byteScanner)
 		byteScanner = byteScanner[2:]
 
@@ -351,11 +348,11 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 
 		var commitment IndexedCommitment
 		if err := commitment.D.SetBytes(byteScanner); err != nil {
-			return secp256k1.Fn{}, fmt.Errorf("invalid curve point: %v", err)
+			return secp256k1.Fn{}, fmt.Errorf("invalid curve point d for %v: %v", ind, err)
 		}
 		byteScanner = byteScanner[secp256k1.PointSizeMarshalled:]
 		if err := commitment.E.SetBytes(byteScanner); err != nil {
-			return secp256k1.Fn{}, fmt.Errorf("invalid curve point: %v", err)
+			return secp256k1.Fn{}, fmt.Errorf("invalid curve point e for %v: %v", ind, err)
 		}
 		byteScanner = byteScanner[secp256k1.PointSizeMarshalled:]
 		commitment.Index = ind
