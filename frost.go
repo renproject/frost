@@ -12,10 +12,24 @@ import (
 )
 
 const (
+	// Message format: empty.
 	TypeCommitmentRequest = byte(0x00)
-	TypeCommitment        = byte(0x01)
-	TypeContributions     = byte(0x02)
-	TypeZ                 = byte(0x03)
+
+	// Message format:
+	// - [0:33]  serialisation of the point D
+	// - [33:66} serialisation of the point E
+	TypeCommitment = byte(0x01)
+
+	// Message format:
+	// - [0:32] message hash
+	// - [32:]  list of commitments, no length prefix
+	// It is assumed that the commitments are ordered by their index in
+	// ascending order.
+	TypeContributions = byte(0x02)
+
+	// Message format:
+	// - [0:32] serialisation of the scalar z
+	TypeZ = byte(0x03)
 )
 
 type Message struct {
@@ -47,6 +61,9 @@ type IndexedZ struct {
 	Z     secp256k1.Fn
 }
 
+// SAState is the data that represents the state of the signature aggregator
+// during the execution of a signature. It can be reused for multiple signature
+// executions that have the same adversarial threshold `t`.
 type SAState struct {
 	IndexedCommitments  []IndexedCommitment
 	CommitmentsReceived int
@@ -57,6 +74,8 @@ type SAState struct {
 	RsBuffer   []secp256k1.Point
 }
 
+// NewSAState creates a new SAState structure. `t` is the adversarial threshold
+// for the signature execution.
 func NewSAState(t int) SAState {
 	indexedCommitments := make([]IndexedCommitment, t)
 	indexedZs := make([]IndexedZ, t)
@@ -73,6 +92,10 @@ func NewSAState(t int) SAState {
 	}
 }
 
+// Reset the aggregator state so that it can be used in a new signature
+// execution for the given message hash. The subsequent signature execution
+// must have the same adversarial threshold `t` for which the state was
+// constructed.
 func (s *SAState) Reset(msgHash [32]byte) {
 	// NOTE: This will apparently produce optimised code. See
 	// https://github.com/golang/go/commit/f03c9202c43e0abb130669852082117ca50aa9b1
@@ -95,16 +118,34 @@ func (s *SAState) Reset(msgHash [32]byte) {
 	s.ZsReceived = 0
 }
 
+// State is the data that represents the current state of a player (not
+// aggregator) during a signature execution. The default value of the struct
+// represents the initial state.
 type State struct {
 	Nonce
 	Done bool
 }
 
+// InstanceParameters is data that remains constant over the course of several
+// signatures. This is the indices and public key shares assigned to each
+// player. In order to be valid it is assumed that the indices contain no
+// duplicates and are in increasing order, and that the player corrseponding to
+// index `Indices[i]` also corresponds to `PubKeyShares[Indices[i]-1]`.
 type InstanceParameters struct {
 	Indices      []uint16
 	PubKeyShares []secp256k1.Point
 }
 
+// NewInstanceParameters creates a new InstanceParameters struct, performing
+// some checks and ordering the data as needed. The input slices are not
+// modified, instead they are copied into new slices in the struct.
+// Assumptions:
+//     - The indices for the n players are the numbers 1, 2, ..., n.
+//     - There are no duplicate indices.
+//     - The player that corresponds to index `i` also corresponds to the pubkey share `allPubKeyShares[i-1]`.
+// Panics:
+//     - If there are indices that are out of range.
+//     - If there are duplicate indices.
 func NewInstanceParameters(inds []uint16, allPubKeyShares []secp256k1.Point) InstanceParameters {
 	indices := make([]uint16, len(inds))
 	copy(indices, inds)
@@ -138,7 +179,23 @@ func NewInstanceParameters(inds []uint16, allPubKeyShares []secp256k1.Point) Ins
 	return InstanceParameters{Indices: indices, PubKeyShares: pubKeyShares}
 }
 
-func SAHandleCommitment(state *SAState, offset int, from uint16, commitmentBytes []byte) error {
+// SAHandleCommitment performs the message handling for a commitment from the
+// given player.
+func SAHandleCommitment(state *SAState, subset []uint16, from uint16, commitmentBytes []byte) error {
+	offset := offsetOfPlayer(from, subset)
+	if offset < 0 {
+		return fmt.Errorf("received commitment from player not in subset: from: %v", from)
+	}
+
+	baseIndex := 32 + offset*(2+2*secp256k1.PointSizeMarshalled)
+
+	// If the commitment is unset, then the player index in the buffer will be
+	// zero.
+	alreadyHaveCommitment := state.HashBuffer[baseIndex] != 0x0 || state.HashBuffer[baseIndex+1] != 0x0
+	if alreadyHaveCommitment {
+		return fmt.Errorf("already received commitment from player %v", from)
+	}
+
 	if len(commitmentBytes) != 2*secp256k1.PointSizeMarshalled {
 		return fmt.Errorf("serialised commitment length invalid: expected %v, got %v", 2*secp256k1.PointSizeMarshalled, len(commitmentBytes))
 	}
@@ -157,15 +214,6 @@ func SAHandleCommitment(state *SAState, offset int, from uint16, commitmentBytes
 		return fmt.Errorf("error deserialising e: %v", err)
 	}
 
-	baseIndex := 32 + offset*(2+2*secp256k1.PointSizeMarshalled)
-
-	// If the commitment is unset, then the player index in the buffer will be
-	// zero.
-	alreadyHaveCommitment := state.HashBuffer[baseIndex] != 0x0 || state.HashBuffer[baseIndex+1] != 0x0
-	if alreadyHaveCommitment {
-		return fmt.Errorf("already received commitment from player %v", from)
-	}
-
 	binary.LittleEndian.PutUint16(state.HashBuffer[baseIndex:], from)
 
 	copy(state.HashBuffer[baseIndex+2:], commitmentBytes[:secp256k1.PointSizeMarshalled])
@@ -177,9 +225,15 @@ func SAHandleCommitment(state *SAState, offset int, from uint16, commitmentBytes
 	return nil
 }
 
-func SAHandleZ(state *SAState, offset int, from uint16, zBytes []byte) error {
+// SAHandleZ handles a z message from the given player.
+func SAHandleZ(state *SAState, subset []uint16, from uint16, zBytes []byte) error {
 	if len(zBytes) != 32 {
 		return fmt.Errorf("invalid z encoding length: expected 32, got %v", len(zBytes))
+	}
+
+	offset := offsetOfPlayer(from, subset)
+	if offset < 0 {
+		return fmt.Errorf("received z from player not in subset: from: %v", from)
 	}
 
 	var z secp256k1.Fn
@@ -206,6 +260,9 @@ func offsetOfPlayer(player uint16, players []uint16) int {
 	return -1
 }
 
+// SAComputeSignature computes the final signature for a signature aggregator
+// that has received all of the zs from the players. If any of the zs represent
+// an invalid proof, an error is returned.
 func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Point, indices []uint16, bip340 bool) (secp256k1.Point, secp256k1.Fn, error) {
 	r := computeAllRs(state.RsBuffer, state.IndexedCommitments, state.HashBuffer)
 	rHasEvenY := r.HasEvenY()
@@ -235,17 +292,20 @@ func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Poin
 	return r, z, nil
 }
 
+// SAHandleMessage performs the message handling logic for the aggregator. The
+// return parameters are:
+//     - bool representing whether the signature is complete
+//     - r value of the signature if it is completed
+//     - s value of the signature if it is completed
+//     - bool representing whether there is a message that needs to be sent
+//     - message to be sent, which should be sent to all players in the subset
+//       for the current signature execution
 func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Point, params InstanceParameters, bip340 bool) (bool, secp256k1.Point, secp256k1.Fn, bool, Message, error) {
 	t := len(params.Indices)
 
-	offset := offsetOfPlayer(from, params.Indices)
-	if offset < 0 {
-		return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("received message from player not in subset: type: %v, from: %v", msg.Type, from)
-	}
-
 	switch msg.Type {
 	case TypeCommitment:
-		err := SAHandleCommitment(state, offset, from, msg.Data)
+		err := SAHandleCommitment(state, params.Indices, from, msg.Data)
 		if err != nil {
 			return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("error handling commitment: %v", err)
 		}
@@ -260,7 +320,7 @@ func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Poin
 		}
 
 	case TypeZ:
-		err := SAHandleZ(state, offset, from, msg.Data)
+		err := SAHandleZ(state, params.Indices, from, msg.Data)
 		if err != nil {
 			return false, secp256k1.Point{}, secp256k1.Fn{}, false, Message{}, fmt.Errorf("error handling z: %v", err)
 		}
@@ -281,22 +341,35 @@ func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Poin
 	}
 }
 
-func RandomNonceCommitmentPair() (Nonce, Commitment) {
+// RandomNonceCommitmentPair performs the message handling for a commitment
+// request.
+func RandomNonceCommitmentPair(state *State) (Commitment, error) {
+	if state.Nonce != (Nonce{}) {
+		// NOTE(ross): If we want to reuse resources (i.e. the `State`)
+		// then returning an error here implies that it is the
+		// responsibility of the user of the `frost` package to reset the
+		// state before using it again.
+		return Commitment{}, errors.New("already handled a commitment request")
+	}
+
 	d, e := secp256k1.RandomFn(), secp256k1.RandomFn()
 
 	var gd, ge secp256k1.Point
 	gd.BaseExp(&d)
 	ge.BaseExp(&e)
 
-	return Nonce{D: d, E: e}, Commitment{D: gd, E: ge}
+	state.Nonce = Nonce{D: d, E: e}
+
+	return Commitment{D: gd, E: ge}, nil
 }
 
-// Assumed message format:
-// - [0:32] message hash
-// - [32:]  list of commitments, no length prefix
-// We assume that the commitments are ordered by their index in ascending
-// order. It is the responsibility of the SA to have the list sorted thusly.
-func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index uint16, n, t int, msgBytes []byte, bip340 bool) (secp256k1.Fn, error) {
+// HandleSAProposal performs the message handling logic for a proposal from the
+// aggregator.
+func HandleSAProposal(state *State, si *secp256k1.Fn, y *secp256k1.Point, index uint16, n, t int, msgBytes []byte, bip340 bool) (secp256k1.Fn, error) {
+	if state.Done {
+		return secp256k1.Fn{}, errors.New("already handled contributions")
+	}
+
 	commitmentSize := 2 + 2*secp256k1.PointSizeMarshalled
 	if len(msgBytes) != commitmentSize*t+32 {
 		return secp256k1.Fn{}, fmt.Errorf("invalid commitment list size %v should be %v", len(msgBytes), commitmentSize*t+32)
@@ -362,17 +435,22 @@ func HandleSAProposal(nonce *Nonce, si *secp256k1.Fn, y *secp256k1.Point, index 
 
 	r, rho := computeRAndRho(commitments, msgBytes, index)
 	if bip340 && !r.HasEvenY() {
-		nonce.D.Negate(&nonce.D)
-		nonce.E.Negate(&nonce.E)
+		state.Nonce.D.Negate(&state.Nonce.D)
+		state.Nonce.E.Negate(&state.Nonce.E)
 		r.Negate(&r)
 	}
 	c := computeC(&r, y, msgHash, bip340)
-	z := computeZ(index, indices, &nonce.D, &nonce.E, &rho, si, &c)
+	z := computeZ(index, indices, &state.Nonce.D, &state.Nonce.E, &rho, si, &c)
+
+	state.Done = true
 
 	return z, nil
 }
 
-func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn, y *secp256k1.Point, n, t int, isFromAggregator bool, bip340 bool) (Message, error) {
+// Handle performs the message handling logic for a player during a signature
+// execution. It returns either a message to be sent to the signature
+// aggregator, or an error.
+func HandleMessage(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn, y *secp256k1.Point, n, t int, isFromAggregator bool, bip340 bool) (Message, error) {
 	// @Design: This obviously looks like a weird approach to not accepting
 	// messages that aren't from the aggregator. The reasoning is: we do not
 	// want to assume what "network" form the identities of the players assume,
@@ -388,17 +466,10 @@ func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn,
 
 	switch msg.Type {
 	case TypeCommitmentRequest:
-		if state.Nonce != (Nonce{}) {
-			// NOTE(ross): If we want to reuse resources (i.e. the `State`)
-			// then returning an error here implies that it is the
-			// responsibility of the user of the `frost` package to reset the
-			// state before using it again.
-			return Message{}, errors.New("already handled a commitment request")
+		commitment, err := RandomNonceCommitmentPair(state)
+		if err != nil {
+			return Message{}, err
 		}
-
-		nonce, commitment := RandomNonceCommitmentPair()
-
-		state.Nonce = nonce
 
 		var commitmentBytes [66]byte
 		commitment.Bytes(commitmentBytes[:])
@@ -406,16 +477,10 @@ func Handle(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn,
 		return Message{Type: TypeCommitment, Data: commitmentBytes[:]}, nil
 
 	case TypeContributions:
-		if state.Done {
-			return Message{}, errors.New("already handled contributions")
-		}
-
-		z, err := HandleSAProposal(&state.Nonce, privKeyShare, y, index, n, t, msg.Data, bip340)
+		z, err := HandleSAProposal(state, privKeyShare, y, index, n, t, msg.Data, bip340)
 		if err != nil {
 			return Message{}, err
 		}
-
-		state.Done = true
 
 		var zBytes [32]byte
 		z.PutB32(zBytes[:])

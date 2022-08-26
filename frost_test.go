@@ -45,7 +45,7 @@ var _ = Describe("frost", func() {
 					for ty := 0; ty < 256; ty++ {
 						ty := uint8(ty)
 						if ty != frost.TypeCommitmentRequest && ty != frost.TypeContributions {
-							_, err := frost.Handle(frost.Message{Type: ty}, &state, index, &privKeyShare, &pubKey, 10, t, true, bip340)
+							_, err := frost.HandleMessage(frost.Message{Type: ty}, &state, index, &privKeyShare, &pubKey, 10, t, true, bip340)
 							Expect(err).To(HaveOccurred())
 						}
 
@@ -64,7 +64,7 @@ var _ = Describe("frost", func() {
 
 					msg := frost.Message{Type: frost.TypeCommitmentRequest}
 					for i := range players {
-						_, err := frost.Handle(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, false, bip340)
+						_, err := frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, false, bip340)
 						Expect(err).To(HaveOccurred())
 					}
 				})
@@ -77,11 +77,11 @@ var _ = Describe("frost", func() {
 
 					msg := frost.Message{Type: frost.TypeCommitmentRequest}
 					for i := range players {
-						_, err := frost.Handle(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+						_, err := frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 						if err != nil {
 							panic(err)
 						}
-						_, err = frost.Handle(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+						_, err = frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 						Expect(err).To(HaveOccurred())
 					}
 				})
@@ -131,7 +131,7 @@ var _ = Describe("frost", func() {
 					for i := range players {
 						index := players[i].index
 						if !isElementOf(index, subset) {
-							response, err := frost.Handle(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -152,7 +152,7 @@ var _ = Describe("frost", func() {
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							response, err := frost.Handle(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -176,7 +176,7 @@ var _ = Describe("frost", func() {
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							response, err := frost.Handle(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -193,24 +193,24 @@ var _ = Describe("frost", func() {
 
 								// Wrong message data length.
 								badProposal.Data = proposal.Data[:len(proposal.Data)-1]
-								_, err = frost.Handle(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 								badProposal.Data = append(proposal.Data, byte(0))
-								_, err = frost.Handle(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Out of range index.
 								copy(data, proposal.Data)
 								binary.LittleEndian.PutUint16(data[32:], uint16(n+1))
 								badProposal.Data = data
-								_, err = frost.Handle(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Out of order index.
 								copy(data, proposal.Data)
 								binary.LittleEndian.PutUint16(data[32:], uint16(n))
 								badProposal.Data = data
-								_, err = frost.Handle(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Bad curve point data
@@ -220,7 +220,7 @@ var _ = Describe("frost", func() {
 									firstD[i] = 0
 								}
 								badProposal.Data = data
-								_, err = frost.Handle(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								copy(data, proposal.Data)
@@ -229,15 +229,15 @@ var _ = Describe("frost", func() {
 									firstE[i] = 0
 								}
 								badProposal.Data = data
-								_, err = frost.Handle(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Duplicate proposal.
-								_, err = frost.Handle(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								if err != nil {
 									panic(err)
 								}
-								_, err = frost.Handle(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 							}
 						}
@@ -257,7 +257,7 @@ var _ = Describe("frost", func() {
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							response, err := frost.Handle(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -270,7 +270,7 @@ var _ = Describe("frost", func() {
 							if hasMessage {
 								proposalCreated = true
 
-								zMsg, err := frost.Handle(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								zMsg, err := frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 								if err != nil {
 									panic(err)
 								}
@@ -279,6 +279,17 @@ var _ = Describe("frost", func() {
 								_, _, _, _, _, err = frost.SAHandleMessage(frost.Message{Type: frost.TypeZ, Data: make([]byte, 31)}, index, &aggregator.state, &aggregatedPubKey, params, bip340)
 								Expect(err).To(HaveOccurred())
 								_, _, _, _, _, err = frost.SAHandleMessage(frost.Message{Type: frost.TypeZ, Data: make([]byte, 33)}, index, &aggregator.state, &aggregatedPubKey, params, bip340)
+								Expect(err).To(HaveOccurred())
+
+								// Player not in subset.
+								var badIndex uint16
+								for j := range players {
+									if !isElementOf(players[j].index, subset) {
+										badIndex = players[j].index
+									}
+								}
+
+								_, _, _, _, _, err = frost.SAHandleMessage(zMsg, badIndex, &aggregator.state, &aggregatedPubKey, params, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Duplicate z contribution.
@@ -307,7 +318,7 @@ var _ = Describe("frost", func() {
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							response, err := frost.Handle(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -325,7 +336,7 @@ var _ = Describe("frost", func() {
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							zMsg, err := frost.Handle(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							zMsg, err := frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -500,7 +511,7 @@ type player struct {
 }
 
 func (p *player) handle(m message) frost.Message {
-	msg, err := frost.Handle(m.msg, &p.state, p.index, &p.privKeyShare, &p.pubKey, p.n, p.t, m.from == 0, p.bip340)
+	msg, err := frost.HandleMessage(m.msg, &p.state, p.index, &p.privKeyShare, &p.pubKey, p.n, p.t, m.from == 0, p.bip340)
 	if err != nil {
 		panic(err)
 	}
