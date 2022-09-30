@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = FDescribe("DKG", func() {
+var _ = Describe("DKG", func() {
 	Context("honest online nodes", func() {
 		It("should produce a valid shared key", func() {
 			n := 10
