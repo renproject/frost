@@ -62,45 +62,7 @@ type dkgMessage struct {
 	msg      frost.DKGMessage
 }
 
-type dkgRingBuffer struct {
-	buf              []dkgMessage
-	front, back, cap int
-	full             bool
-}
-
-func newDKGRingBuffer(cap int) dkgRingBuffer {
-	return dkgRingBuffer{
-		buf:   make([]dkgMessage, cap),
-		front: 0,
-		back:  0,
-		cap:   cap,
-	}
-}
-
-func (rb *dkgRingBuffer) push(m dkgMessage) {
-	if rb.full {
-		panic("ring buffer is full")
-	}
-
-	rb.buf[rb.back] = m
-	rb.back = (rb.back + 1) % rb.cap
-
-	if rb.back == rb.front {
-		rb.full = true
-	}
-}
-
-func (rb *dkgRingBuffer) pop() dkgMessage {
-	if rb.front == rb.back && !rb.full {
-		panic("pop from empty ring buffer")
-	}
-
-	rb.full = false
-
-	m := rb.buf[rb.front]
-	rb.front = (rb.front + 1) % rb.cap
-	return m
-}
+func (m dkgMessage) isBufferMessage() {}
 
 type dkgPlayer struct {
 	index   uint16
@@ -137,7 +99,7 @@ type dkgSimOutput struct {
 }
 
 func executeDKG(players []dkgPlayer) []dkgSimOutput {
-	msgQueue := newDKGRingBuffer(2 * len(players) * (len(players) - 1))
+	msgQueue := newRingBuffer(2 * len(players) * (len(players) - 1))
 
 	for i := range players {
 		msg := frost.DKGStart(&players[i].state, players[i].indices, players[i].t, players[i].index, players[i].context)
@@ -154,7 +116,7 @@ func executeDKG(players []dkgPlayer) []dkgSimOutput {
 
 	outputs := make([]dkgSimOutput, 0, len(players))
 	for {
-		m := msgQueue.pop()
+		m := msgQueue.pop().(dkgMessage)
 
 		var player *dkgPlayer = nil
 		for i := range players {
