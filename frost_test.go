@@ -411,28 +411,22 @@ type message struct {
 	msg      frost.Message
 }
 
-func (m message) isBufferMessage() {}
-
-type bufferMessage interface {
-	isBufferMessage()
-}
-
-type ringBuffer struct {
-	buf              []bufferMessage
+type ringBuffer[T any] struct {
+	buf              []T
 	front, back, cap int
 	full             bool
 }
 
-func newRingBuffer(cap int) ringBuffer {
-	return ringBuffer{
-		buf:   make([]bufferMessage, cap),
+func newRingBuffer[T any](cap int) ringBuffer[T] {
+	return ringBuffer[T]{
+		buf:   make([]T, cap),
 		front: 0,
 		back:  0,
 		cap:   cap,
 	}
 }
 
-func (rb *ringBuffer) push(m bufferMessage) {
+func (rb *ringBuffer[T]) push(m T) {
 	if rb.full {
 		panic("ring buffer is full")
 	}
@@ -445,7 +439,7 @@ func (rb *ringBuffer) push(m bufferMessage) {
 	}
 }
 
-func (rb *ringBuffer) pop() bufferMessage {
+func (rb *ringBuffer[T]) pop() T {
 	if rb.front == rb.back && !rb.full {
 		panic("pop from empty ring buffer")
 	}
@@ -463,7 +457,7 @@ type signature struct {
 }
 
 func executeThresholdSignature(aggregator *sa, players []player, msgHash [32]byte) signature {
-	msgQueue := newRingBuffer(len(players))
+	msgQueue := newRingBuffer[message](len(players))
 
 	aggregator.state.Reset(msgHash)
 
@@ -478,7 +472,7 @@ func executeThresholdSignature(aggregator *sa, players []player, msgHash [32]byt
 	for {
 		// This assumes that there will always be a message in the queue before
 		// the aggregator is able to produce a signature.
-		m := msgQueue.pop().(message)
+		m := msgQueue.pop()
 
 		if m.to == 0 {
 

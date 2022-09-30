@@ -99,7 +99,7 @@ type dkgSimOutput struct {
 }
 
 func executeDKG(players []dkgPlayer) []dkgSimOutput {
-	msgQueue := newRingBuffer(2 * len(players) * (len(players) - 1))
+	msgQueue := newRingBuffer[dkgMessage](2 * len(players) * (len(players) - 1))
 
 	for i := range players {
 		msg := frost.DKGStart(&players[i].state, players[i].indices, players[i].t, players[i].index, players[i].context)
@@ -116,7 +116,7 @@ func executeDKG(players []dkgPlayer) []dkgSimOutput {
 
 	outputs := make([]dkgSimOutput, 0, len(players))
 	for {
-		m := msgQueue.pop().(dkgMessage)
+		m := msgQueue.pop()
 
 		var player *dkgPlayer = nil
 		for i := range players {
