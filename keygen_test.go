@@ -1,6 +1,9 @@
 package frost_test
 
 import (
+	"fmt"
+	"sort"
+
 	"github.com/renproject/frost"
 	"github.com/renproject/secp256k1"
 	"github.com/renproject/shamir"
@@ -23,12 +26,13 @@ var _ = FDescribe("DKG", func() {
 			players := createDKGPlayers(indices, t, context)
 
 			outputs := executeDKG(players)
+			sort.Slice(outputs, func(i, j int) bool { return outputs[i].index < outputs[j].index })
 
 			shares := make([]shamir.Share, 0, len(outputs))
-			for index, output := range outputs {
-				Expect(output.err).To(BeNil())
+			for i := range outputs {
+				Expect(outputs[i].err).To(BeNil())
 
-				shares = append(shares, shamir.Share{Index: secp256k1.NewFnFromU16(index), Value: output.output.Share})
+				shares = append(shares, shamir.Share{Index: secp256k1.NewFnFromU16(outputs[i].index), Value: outputs[i].output.Share})
 			}
 
 			Expect(shamirutil.SharesAreConsistent(shares, t)).To(BeTrue())
@@ -42,11 +46,11 @@ var _ = FDescribe("DKG", func() {
 				expectedPubKeyShares[i].BaseExp(&shares[i].Value)
 			}
 
-			for _, output := range outputs {
-				Expect(output.output.PubKey.Eq(&expectedPubKey)).To(BeTrue())
+			for i := range outputs {
+				Expect(outputs[i].output.PubKey.Eq(&expectedPubKey)).To(BeTrue())
 
-				for i := range output.output.PubKeyShares {
-					Expect(output.output.PubKeyShares[i].Eq(&expectedPubKeyShares[i])).To(BeTrue())
+				for j := range outputs[i].output.PubKeyShares {
+					Expect(outputs[i].output.PubKeyShares[j].Eq(&expectedPubKeyShares[j])).To(BeTrue())
 				}
 			}
 		})
@@ -127,12 +131,13 @@ func createDKGPlayers(indices []uint16, t int, context [32]byte) []dkgPlayer {
 }
 
 type dkgSimOutput struct {
+	index  uint16
 	output frost.DKGOutput
 	err    error
 }
 
-func executeDKG(players []dkgPlayer) map[uint16]dkgSimOutput {
-	msgQueue := newDKGRingBuffer(len(players) * (len(players) - 1))
+func executeDKG(players []dkgPlayer) []dkgSimOutput {
+	msgQueue := newDKGRingBuffer(2 * len(players) * (len(players) - 1))
 
 	for i := range players {
 		msg := frost.DKGStart(&players[i].state, players[i].indices, players[i].t, players[i].index, players[i].context)
@@ -147,7 +152,7 @@ func executeDKG(players []dkgPlayer) map[uint16]dkgSimOutput {
 		}
 	}
 
-	outputs := make(map[uint16]dkgSimOutput, len(players))
+	outputs := make([]dkgSimOutput, 0, len(players))
 	for {
 		m := msgQueue.pop()
 
@@ -159,7 +164,7 @@ func executeDKG(players []dkgPlayer) map[uint16]dkgSimOutput {
 			}
 		}
 		if player == nil {
-			panic("message addressed to player that does not exist")
+			panic(fmt.Sprintf("message addressed to player that does not exist: %v", m.to))
 		}
 
 		if player.aborted {
@@ -170,7 +175,7 @@ func executeDKG(players []dkgPlayer) map[uint16]dkgSimOutput {
 
 		if err != nil {
 			player.aborted = true
-			outputs[player.index] = dkgSimOutput{output: frost.DKGOutput{}, err: err}
+			outputs = append(outputs, dkgSimOutput{index: player.index, output: frost.DKGOutput{}, err: err})
 		}
 
 		if newMessages != nil {
@@ -184,11 +189,11 @@ func executeDKG(players []dkgPlayer) map[uint16]dkgSimOutput {
 		}
 
 		if done {
-			outputs[player.index] = dkgSimOutput{output: output, err: nil}
+			outputs = append(outputs, dkgSimOutput{index: player.index, output: output, err: nil})
+		}
 
-			if len(outputs) == len(players) {
-				return outputs
-			}
+		if len(outputs) == len(players) {
+			return outputs
 		}
 	}
 }
