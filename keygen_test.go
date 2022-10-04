@@ -33,7 +33,7 @@ var _ = Describe("DKG", func() {
 	})
 
 	Context("all nodes honest and some offline", func() {
-		It("should produce a valid shared key when less than n-t nodes are offline", func() {
+		It("should produce a valid shared key when at most t nodes are offline", func() {
 			n := 10
 			t := 5
 
@@ -43,7 +43,7 @@ var _ = Describe("DKG", func() {
 			step1Timeout := time.Duration(500 * time.Millisecond)
 
 			players := createDKGPlayers(indices, t, context)
-			for i := 0; i < n-t; i++ {
+			for i := 0; i < t; i++ {
 				players[i].online = false
 			}
 
@@ -151,6 +151,7 @@ type dkgSimOutput struct {
 func executeDKG(players []dkgPlayer, step1Timeout time.Duration) []dkgSimOutput {
 	msgQueue := newRingBuffer[dkgMessage](2 * len(players) * (len(players) - 1))
 	timeout := time.After(step1Timeout)
+	timeoutExecuted := false
 
 	for i := range players {
 		if players[i].online {
@@ -171,6 +172,10 @@ func executeDKG(players []dkgPlayer, step1Timeout time.Duration) []dkgSimOutput 
 	for {
 		m, err := msgQueue.pop()
 		if err != nil {
+			if timeoutExecuted {
+				panic(err)
+			}
+
 			<-timeout
 
 			for i := range players {
@@ -183,6 +188,8 @@ func executeDKG(players []dkgPlayer, step1Timeout time.Duration) []dkgSimOutput 
 					}
 				}
 			}
+
+			timeoutExecuted = true
 		}
 
 		var player *dkgPlayer = nil
