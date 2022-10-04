@@ -2,6 +2,7 @@ package frost_test
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
 
@@ -426,9 +427,9 @@ func newRingBuffer[T any](cap int) ringBuffer[T] {
 	}
 }
 
-func (rb *ringBuffer[T]) push(m T) {
+func (rb *ringBuffer[T]) push(m T) error {
 	if rb.full {
-		panic("ring buffer is full")
+		return errors.New("ring buffer is full")
 	}
 
 	rb.buf[rb.back] = m
@@ -437,18 +438,20 @@ func (rb *ringBuffer[T]) push(m T) {
 	if rb.back == rb.front {
 		rb.full = true
 	}
+
+	return nil
 }
 
-func (rb *ringBuffer[T]) pop() T {
+func (rb *ringBuffer[T]) pop() (T, error) {
 	if rb.front == rb.back && !rb.full {
-		panic("pop from empty ring buffer")
+		return rb.buf[0], errors.New("pop from empty ring buffer")
 	}
 
 	rb.full = false
 
 	m := rb.buf[rb.front]
 	rb.front = (rb.front + 1) % rb.cap
-	return m
+	return m, nil
 }
 
 type signature struct {
@@ -462,17 +465,23 @@ func executeThresholdSignature(aggregator *sa, players []player, msgHash [32]byt
 	aggregator.state.Reset(msgHash)
 
 	for _, i := range aggregator.params.Indices {
-		msgQueue.push(message{
+		err := msgQueue.push(message{
 			from: 0, // We will represent the aggregator as having index 0.
 			to:   i,
 			msg:  frost.Message{Type: frost.TypeCommitmentRequest, Data: nil},
 		})
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	for {
 		// This assumes that there will always be a message in the queue before
 		// the aggregator is able to produce a signature.
-		m := msgQueue.pop()
+		m, err := msgQueue.pop()
+		if err != nil {
+			panic(err)
+		}
 
 		if m.to == 0 {
 
@@ -482,18 +491,24 @@ func executeThresholdSignature(aggregator *sa, players []player, msgHash [32]byt
 				return signature{r, s}
 			} else if haveMsg {
 				for _, i := range aggregator.params.Indices {
-					msgQueue.push(message{
+					err := msgQueue.push(message{
 						from: 0,
 						to:   i,
 						msg:  newMsg,
 					})
+					if err != nil {
+						panic(err)
+					}
 				}
 			}
 		} else {
 			player := &players[m.to-1]
 
 			newMsg := player.handle(m)
-			msgQueue.push(message{from: player.index, to: 0, msg: newMsg})
+			err := msgQueue.push(message{from: player.index, to: 0, msg: newMsg})
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 

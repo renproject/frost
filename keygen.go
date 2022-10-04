@@ -58,34 +58,33 @@ func (p *Proof) SetBytes(bs []byte) error {
 
 type DKGState struct {
 	Coefficients []secp256k1.Fn
-	Commitments  [][]secp256k1.Point
-	Shares       []secp256k1.Fn
 
-	ContributionsReceived int
-	SharesReceived        int
+	Step        uint8
+	Commitments map[uint16][]secp256k1.Point
+	Shares      map[uint16]secp256k1.Fn
 }
 
 func NewEmptyDKGState(n, t int) DKGState {
 	coefficients := make([]secp256k1.Fn, t)
-	commitments := make([][]secp256k1.Point, n)
-	shares := make([]secp256k1.Fn, n)
+
+	commitments := make(map[uint16][]secp256k1.Point, n)
+	shares := make(map[uint16]secp256k1.Fn, n)
 
 	return DKGState{
 		Coefficients: coefficients,
-		Commitments:  commitments,
-		Shares:       shares,
 
-		ContributionsReceived: 0,
-		SharesReceived:        0,
+		Commitments: commitments,
+		Shares:      shares,
 	}
 }
 
-func DKGStart(state *DKGState, indices []uint16, t int, ownIndex uint16, context [32]byte) DKGMessage {
-	for i := range state.Commitments {
-		state.Commitments[i] = nil
+func DKGStart(state *DKGState, t int, ownIndex uint16, context [32]byte) DKGMessage {
+	state.Step = 1
+	for index := range state.Commitments {
+		delete(state.Commitments, index)
 	}
-	for i := range state.Shares {
-		state.Shares[i] = secp256k1.NewFnFromU16(0)
+	for index := range state.Shares {
+		delete(state.Shares, index)
 	}
 
 	coeffs := make([]secp256k1.Fn, t)
@@ -99,12 +98,7 @@ func DKGStart(state *DKGState, indices []uint16, t int, ownIndex uint16, context
 		commitments[i].BaseExp(&coeffs[i])
 	}
 
-	sliceIndex := offsetOfPlayer(ownIndex, indices)
-	if sliceIndex == -1 {
-		panic("own index not in index set")
-	}
-	state.Commitments[sliceIndex] = commitments
-	state.ContributionsReceived++
+	state.Commitments[ownIndex] = commitments
 
 	var r secp256k1.Point
 	k := secp256k1.RandomFn()
@@ -166,46 +160,35 @@ func dkgComputeC(from uint16, context [32]byte, secretCommitment, r *secp256k1.P
 	return c
 }
 
-func DKGHandleContribution(state *DKGState, indices []uint16, context [32]byte, from uint16, commitments []secp256k1.Point, proof Proof) error {
-	sliceIndex := offsetOfPlayer(from, indices)
-	if sliceIndex < 0 {
-		return fmt.Errorf("received contribution from player not in index list: from: %v", from)
-	}
-
-	if state.Commitments[sliceIndex] != nil {
-		return errors.New("already handled commitment from player")
+func DKGHandleContribution(state *DKGState, context [32]byte, from uint16, commitments []secp256k1.Point, proof Proof) error {
+	if _, ok := state.Commitments[from]; ok {
+		return errors.New("already handled commitments from player")
 	}
 
 	if !DKGCheckContribution(from, context, &commitments[0], proof) {
 		return errors.New("invalid proof")
 	}
 
-	state.Commitments[sliceIndex] = commitments
-	state.ContributionsReceived++
+	state.Commitments[from] = commitments
 
 	return nil
 }
 
-func DKGHandleShare(state *DKGState, indices []uint16, ownIndex, from uint16, share secp256k1.Fn) error {
-	sliceIndex := offsetOfPlayer(from, indices)
-	if sliceIndex < 0 {
-		return fmt.Errorf("received contribution from player not in index list: from: %v", from)
+func DKGHandleShare(state *DKGState, ownIndex, from uint16, share secp256k1.Fn) error {
+	commitments, ok := state.Commitments[from]
+	if !ok {
+		return errors.New("share received before commitments")
 	}
 
-	if state.Commitments[sliceIndex] == nil {
-		return errors.New("share received before commitment")
-	}
-
-	if !state.Shares[sliceIndex].IsZero() {
+	if _, ok := state.Shares[from]; ok {
 		return errors.New("already received share from player")
 	}
 
-	if !verifyShare(ownIndex, share, state.Commitments[sliceIndex]) {
+	if !verifyShare(ownIndex, share, commitments) {
 		return errors.New("invalid share")
 	}
 
-	state.Shares[sliceIndex] = share
-	state.SharesReceived++
+	state.Shares[from] = share
 
 	return nil
 }
@@ -215,6 +198,10 @@ func DKGHandleMessage(state *DKGState, ownIndex uint16, indices []uint16, t int,
 
 	switch message.Type {
 	case DKGTypeContribution:
+		if state.Step != 1 {
+			return false, DKGOutput{}, nil, nil
+		}
+
 		expectedLen := ProofLenMarshalled + t*secp256k1.PointSizeMarshalled
 		if len(message.Data) != expectedLen {
 			return false, DKGOutput{}, nil, fmt.Errorf("invalid contribution message length: expected %v, got %v", expectedLen, len(message.Data))
@@ -239,35 +226,13 @@ func DKGHandleMessage(state *DKGState, ownIndex uint16, indices []uint16, t int,
 			tail = tail[secp256k1.PointSizeMarshalled:]
 		}
 
-		err = DKGHandleContribution(state, indices, context, from, commitments, proof)
+		err = DKGHandleContribution(state, context, from, commitments, proof)
 		if err != nil {
 			return false, DKGOutput{}, nil, fmt.Errorf("error handling contribution: %v", err)
 		}
 
-		if state.ContributionsReceived == n {
-			shareMessages := make([]DKGMessageTo, 0, n-1)
-			for i := range indices {
-				if indices[i] == ownIndex {
-					share := computeShare(ownIndex, state.Coefficients)
-					sliceIndex := offsetOfPlayer(ownIndex, indices)
-					state.Shares[sliceIndex] = share
-					state.SharesReceived++
-				} else {
-					share := computeShare(indices[i], state.Coefficients)
-					var shareBytes [32]byte
-					share.PutB32(shareBytes[:])
-
-					shareMessages = append(shareMessages, DKGMessageTo{
-						DKGMessage: DKGMessage{
-							Type: DKGTypeShare,
-							Data: shareBytes[:],
-						},
-						To: indices[i],
-					})
-				}
-			}
-
-			return false, DKGOutput{}, shareMessages, nil
+		if len(state.Commitments) == n {
+			return transitionToStep2(state, ownIndex, indices)
 		} else {
 			return false, DKGOutput{}, nil, nil
 		}
@@ -279,12 +244,12 @@ func DKGHandleMessage(state *DKGState, ownIndex uint16, indices []uint16, t int,
 		var share secp256k1.Fn
 		share.SetB32(message.Data)
 
-		err := DKGHandleShare(state, indices, ownIndex, from, share)
+		err := DKGHandleShare(state, ownIndex, from, share)
 		if err != nil {
 			return false, DKGOutput{}, nil, fmt.Errorf("error handling share message: %v", err)
 		}
 
-		if state.SharesReceived == n {
+		if state.Step == 2 && len(state.Shares) == len(state.Commitments) {
 			return true, computeOutputs(state, indices, ownIndex), nil, nil
 		} else {
 			return false, DKGOutput{}, nil, nil
@@ -293,6 +258,48 @@ func DKGHandleMessage(state *DKGState, ownIndex uint16, indices []uint16, t int,
 	default:
 		return false, DKGOutput{}, nil, fmt.Errorf("invalid message type %v", message.Type)
 	}
+}
+
+func DKGHandleTimeout(state *DKGState, ownIndex uint16, indices []uint16, t int) (bool, DKGOutput, []DKGMessageTo, error) {
+	if state.Step != 1 {
+		return false, DKGOutput{}, nil, nil
+	}
+
+	if state.Step == 1 && len(state.Commitments) < t {
+		return false, DKGOutput{}, nil, fmt.Errorf("timeout before obtaining sufficient commitments: needed at least %v, got %v", t, len(state.Commitments))
+	}
+
+	return transitionToStep2(state, ownIndex, indices)
+}
+
+func transitionToStep2(state *DKGState, ownIndex uint16, indices []uint16) (bool, DKGOutput, []DKGMessageTo, error) {
+	shareMessages := make([]DKGMessageTo, 0, len(state.Commitments)-1)
+	for index := range state.Commitments {
+		if index == ownIndex {
+			share := computeShare(ownIndex, state.Coefficients)
+			state.Shares[ownIndex] = share
+		} else {
+			share := computeShare(index, state.Coefficients)
+			var shareBytes [32]byte
+			share.PutB32(shareBytes[:])
+
+			shareMessages = append(shareMessages, DKGMessageTo{
+				DKGMessage: DKGMessage{
+					Type: DKGTypeShare,
+					Data: shareBytes[:],
+				},
+				To: index,
+			})
+		}
+	}
+
+	state.Step = 2
+
+	if len(state.Shares) == len(state.Commitments) {
+		return true, computeOutputs(state, indices, ownIndex), nil, nil
+	}
+
+	return false, DKGOutput{}, shareMessages, nil
 }
 
 func computeShare(index uint16, coefficients []secp256k1.Fn) secp256k1.Fn {
@@ -343,8 +350,8 @@ type DKGOutput struct {
 
 func computeOutputs(state *DKGState, indices []uint16, ownIndex uint16) DKGOutput {
 	share := secp256k1.NewFnFromU16(0)
-	for i := range state.Shares {
-		share.Add(&share, &state.Shares[i])
+	for _, s := range state.Shares {
+		share.Add(&share, &s)
 	}
 
 	pubKey := secp256k1.NewPointInfinity()
@@ -360,8 +367,8 @@ func computeOutputs(state *DKGState, indices []uint16, ownIndex uint16) DKGOutpu
 			index := secp256k1.NewFnFromU16(indices[i])
 			pubKeyShares[i] = secp256k1.NewPointInfinity()
 
-			for j := range state.Commitments {
-				term := polyEvalPoint(&index, state.Commitments[j])
+			for _, commitments := range state.Commitments {
+				term := polyEvalPoint(&index, commitments)
 				pubKeyShares[i].Add(&pubKeyShares[i], &term)
 			}
 		}
