@@ -30,6 +30,29 @@ var _ = Describe("DKG", func() {
 			outputs := executeDKG(players, step1Timeout)
 			checkOutputs(outputs, n, t, indices)
 		})
+
+		It("should work after restting the state", func() {
+			n := 10
+			t := 5
+
+			indices := sequentialIndices(n)
+			context := [32]byte{}
+			copy(context[:], []byte("context"))
+			step1Timeout := time.Duration(500 * time.Millisecond)
+
+			players := createDKGPlayers(indices, t, context)
+
+			outputs := executeDKG(players, step1Timeout)
+			checkOutputs(outputs, n, t, indices)
+
+			// Reset and run the simulation again.
+			for i := range players {
+				players[i].reset()
+			}
+
+			outputs = executeDKG(players, step1Timeout)
+			checkOutputs(outputs, n, t, indices)
+		})
 	})
 
 	Context("all nodes honest and some offline", func() {
@@ -140,6 +163,12 @@ func createDKGPlayers(indices []uint16, t int, context [32]byte) []dkgPlayer {
 	}
 
 	return players
+}
+
+func (player *dkgPlayer) reset() {
+	player.state.Reset()
+	player.online = true
+	player.aborted = false
 }
 
 type dkgSimOutput struct {

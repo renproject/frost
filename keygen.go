@@ -78,6 +78,18 @@ func NewEmptyDKGState(n, t int) DKGState {
 	}
 }
 
+func (state *DKGState) Reset() {
+	state.Coefficients = state.Coefficients[:0]
+
+	for index := range state.Commitments {
+		delete(state.Commitments, index)
+	}
+
+	for index := range state.Shares {
+		delete(state.Shares, index)
+	}
+}
+
 func DKGStart(state *DKGState, t int, ownIndex uint16, context [32]byte) DKGMessage {
 	state.Step = 1
 	for index := range state.Commitments {
