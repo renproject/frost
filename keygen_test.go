@@ -73,6 +73,82 @@ var _ = Describe("DKG", func() {
 			outputs := executeDKG(players, step1Timeout)
 			checkOutputs(outputs, n, t, indices)
 		})
+
+		FIt("should allow a node to catch up if it was offline", func() {
+			n := 10
+			t := 5
+
+			indices := sequentialIndices(n)
+			context := [32]byte{}
+			copy(context[:], []byte("context"))
+			step1Timeout := time.Duration(500 * time.Millisecond)
+
+			players := createDKGPlayers(indices, t, context)
+			for i := range players {
+				players[i].enableCatchUpInfo()
+			}
+			for i := 0; i < t; i++ {
+				players[i].online = false
+			}
+
+			outputs := executeDKG(players, step1Timeout)
+
+			for i := range players {
+				if players[i].online {
+					continue
+				}
+
+				msgsFrom := map[uint16]frost.DKGCatchUpMessage{}
+
+				for j := range players {
+					if !players[j].online {
+						continue
+					}
+
+					msgBytes := players[j].info.SerialisedMessage(players[i].index)
+
+					msg, err := frost.DKGDeserialiseCatchUpMessage(msgBytes, n, t)
+					Expect(err).ToNot(HaveOccurred())
+
+					msgsFrom[players[j].index] = msg
+				}
+
+				// TODO(ross): Probably simulate picking the most commonly seen
+				// subset.
+				var indexSubset []uint16
+				for _, msg := range msgsFrom {
+					indexSubset = msg.IndexSubset
+					break
+				}
+
+				for _, index := range indexSubset {
+					done, _, _, err := frost.DKGHandleMessage(&players[i].state, nil, players[i].index, players[i].indices, players[i].t, players[i].context, msgsFrom[index].CommitmentsMsg, index)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(done).To(BeFalse())
+				}
+
+				done, _, _, err := frost.DKGHandleTimeout(&players[i].state, nil, players[i].index, players[i].indices, players[i].t)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(done).To(BeFalse())
+
+				for j, index := range indexSubset {
+					done, output, _, err := frost.DKGHandleMessage(&players[i].state, nil, players[i].index, players[i].indices, players[i].t, players[i].context, msgsFrom[index].ShareMsg, index)
+					Expect(err).ToNot(HaveOccurred())
+					if j != len(indexSubset)-1 {
+						Expect(done).To(BeFalse())
+					} else {
+						Expect(done).To(BeTrue())
+						outputs = append(outputs, dkgSimOutput{
+							index:  players[i].index,
+							output: output,
+							err:    nil,
+						})
+					}
+				}
+			}
+
+			checkOutputs(outputs, n, t, indices)
+		})
 	})
 })
 
@@ -109,10 +185,6 @@ func checkOutputs(outputs []dkgSimOutput, n, t int, indices []uint16) {
 		Expect(outputs[i].output.PubKey.Eq(&expectedPubKey)).To(BeTrue())
 
 		for j := range outputs[i].output.PubKeyShares {
-			if !setContains(outputIndices, indices[j]) {
-				continue
-			}
-
 			Expect(outputs[i].output.PubKeyShares[j].Eq(&expectedPubKeyShares[j])).To(BeTrue())
 		}
 	}
@@ -141,6 +213,7 @@ type dkgPlayer struct {
 	t       int
 	context [32]byte
 	state   frost.DKGState
+	info    *frost.DKGCatchUpInfo
 
 	online  bool
 	aborted bool
@@ -156,6 +229,7 @@ func createDKGPlayers(indices []uint16, t int, context [32]byte) []dkgPlayer {
 			t:       t,
 			context: context,
 			state:   frost.NewEmptyDKGState(len(indices), t),
+			info:    nil,
 
 			online:  true,
 			aborted: false,
@@ -163,6 +237,10 @@ func createDKGPlayers(indices []uint16, t int, context [32]byte) []dkgPlayer {
 	}
 
 	return players
+}
+
+func (player *dkgPlayer) enableCatchUpInfo() {
+	player.info = &frost.DKGCatchUpInfo{}
 }
 
 func (player *dkgPlayer) reset() {
@@ -184,7 +262,7 @@ func executeDKG(players []dkgPlayer, step1Timeout time.Duration) []dkgSimOutput 
 
 	for i := range players {
 		if players[i].online {
-			msg := frost.DKGStart(&players[i].state, players[i].t, players[i].index, players[i].context)
+			msg := frost.DKGStart(&players[i].state, players[i].info, players[i].t, players[i].index, players[i].context)
 			for j := range players {
 				if players[i].index != players[j].index {
 					msgQueue.push(dkgMessage{
@@ -209,7 +287,7 @@ func executeDKG(players []dkgPlayer, step1Timeout time.Duration) []dkgSimOutput 
 
 			for i := range players {
 				if players[i].online {
-					done, output, newMessages, err := frost.DKGHandleTimeout(&players[i].state, players[i].index, players[i].indices, players[i].t)
+					done, output, newMessages, err := frost.DKGHandleTimeout(&players[i].state, players[i].info, players[i].index, players[i].indices, players[i].t)
 
 					processHandleOutput(&msgQueue, &players[i], &outputs, done, output, newMessages, err)
 					if simulationDone(players, outputs) {
@@ -236,7 +314,7 @@ func executeDKG(players []dkgPlayer, step1Timeout time.Duration) []dkgSimOutput 
 			continue
 		}
 
-		done, output, newMessages, err := frost.DKGHandleMessage(&player.state, player.index, player.indices, player.t, player.context, m.msg, m.from)
+		done, output, newMessages, err := frost.DKGHandleMessage(&player.state, player.info, player.index, player.indices, player.t, player.context, m.msg, m.from)
 
 		processHandleOutput(&msgQueue, player, &outputs, done, output, newMessages, err)
 		if simulationDone(players, outputs) {

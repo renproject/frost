@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/renproject/secp256k1"
 )
@@ -73,13 +74,14 @@ func NewEmptyDKGState(n, t int) DKGState {
 	return DKGState{
 		Coefficients: coefficients,
 
+		Step:        1,
 		Commitments: commitments,
 		Shares:      shares,
 	}
 }
 
 func (state *DKGState) Reset() {
-	state.Coefficients = state.Coefficients[:0]
+	state.Step = 1
 
 	for index := range state.Commitments {
 		delete(state.Commitments, index)
@@ -90,14 +92,8 @@ func (state *DKGState) Reset() {
 	}
 }
 
-func DKGStart(state *DKGState, t int, ownIndex uint16, context [32]byte) DKGMessage {
-	state.Step = 1
-	for index := range state.Commitments {
-		delete(state.Commitments, index)
-	}
-	for index := range state.Shares {
-		delete(state.Shares, index)
-	}
+func DKGStart(state *DKGState, info *DKGCatchUpInfo, t int, ownIndex uint16, context [32]byte) DKGMessage {
+	state.Reset()
 
 	coeffs := make([]secp256k1.Fn, t)
 	for i := range coeffs {
@@ -110,6 +106,9 @@ func DKGStart(state *DKGState, t int, ownIndex uint16, context [32]byte) DKGMess
 		commitments[i].BaseExp(&coeffs[i])
 	}
 
+	// @Performance: In the future we might want to reuse the memory of
+	// state.Commitments between executions. This would require potential
+	// resizing to the call to Reset.
 	state.Commitments[ownIndex] = commitments
 
 	var r secp256k1.Point
@@ -123,6 +122,16 @@ func DKGStart(state *DKGState, t int, ownIndex uint16, context [32]byte) DKGMess
 	mu.Add(&mu, &k)
 
 	proof := Proof{R: r, Mu: mu}
+
+	if info != nil {
+		info.Commitments = make([]secp256k1.Point, t)
+		copy(info.Commitments, commitments)
+
+		info.Proof = proof
+
+		info.Coefficients = make([]secp256k1.Fn, t)
+		copy(info.Coefficients, coeffs)
+	}
 
 	data := make([]byte, ProofLenMarshalled+t*secp256k1.PointSizeMarshalled)
 	proof.PutBytes(data[:ProofLenMarshalled])
@@ -205,7 +214,7 @@ func DKGHandleShare(state *DKGState, ownIndex, from uint16, share secp256k1.Fn) 
 	return nil
 }
 
-func DKGHandleMessage(state *DKGState, ownIndex uint16, indices []uint16, t int, context [32]byte, message DKGMessage, from uint16) (bool, DKGOutput, []DKGMessageTo, error) {
+func DKGHandleMessage(state *DKGState, info *DKGCatchUpInfo, ownIndex uint16, indices []uint16, t int, context [32]byte, message DKGMessage, from uint16) (bool, DKGOutput, []DKGMessageTo, error) {
 	n := len(indices)
 
 	switch message.Type {
@@ -244,7 +253,7 @@ func DKGHandleMessage(state *DKGState, ownIndex uint16, indices []uint16, t int,
 		}
 
 		if len(state.Commitments) == n {
-			return transitionToStep2(state, ownIndex, indices)
+			return transitionToStep2(state, info, ownIndex, indices)
 		} else {
 			return false, DKGOutput{}, nil, nil
 		}
@@ -272,7 +281,7 @@ func DKGHandleMessage(state *DKGState, ownIndex uint16, indices []uint16, t int,
 	}
 }
 
-func DKGHandleTimeout(state *DKGState, ownIndex uint16, indices []uint16, t int) (bool, DKGOutput, []DKGMessageTo, error) {
+func DKGHandleTimeout(state *DKGState, info *DKGCatchUpInfo, ownIndex uint16, indices []uint16, t int) (bool, DKGOutput, []DKGMessageTo, error) {
 	if state.Step != 1 {
 		return false, DKGOutput{}, nil, nil
 	}
@@ -281,10 +290,10 @@ func DKGHandleTimeout(state *DKGState, ownIndex uint16, indices []uint16, t int)
 		return false, DKGOutput{}, nil, fmt.Errorf("timeout before obtaining sufficient commitments: needed at least %v, got %v", t, len(state.Commitments))
 	}
 
-	return transitionToStep2(state, ownIndex, indices)
+	return transitionToStep2(state, info, ownIndex, indices)
 }
 
-func transitionToStep2(state *DKGState, ownIndex uint16, indices []uint16) (bool, DKGOutput, []DKGMessageTo, error) {
+func transitionToStep2(state *DKGState, info *DKGCatchUpInfo, ownIndex uint16, indices []uint16) (bool, DKGOutput, []DKGMessageTo, error) {
 	shareMessages := make([]DKGMessageTo, 0, len(state.Commitments)-1)
 	for index := range state.Commitments {
 		if index == ownIndex {
@@ -309,6 +318,15 @@ func transitionToStep2(state *DKGState, ownIndex uint16, indices []uint16) (bool
 
 	if len(state.Shares) == len(state.Commitments) {
 		return true, computeOutputs(state, indices, ownIndex), nil, nil
+	}
+
+	if info != nil {
+		info.IndexSubset = make([]uint16, 0, len(state.Commitments))
+		for index := range state.Commitments {
+			info.IndexSubset = append(info.IndexSubset, index)
+		}
+
+		sort.Slice(info.IndexSubset, func(i, j int) bool { return info.IndexSubset[i] < info.IndexSubset[j] })
 	}
 
 	return false, DKGOutput{}, shareMessages, nil
@@ -387,4 +405,98 @@ func computeOutputs(state *DKGState, indices []uint16, ownIndex uint16) DKGOutpu
 	}
 
 	return DKGOutput{Share: share, PubKey: pubKey, PubKeyShares: pubKeyShares}
+}
+
+type DKGCatchUpInfo struct {
+	Commitments []secp256k1.Point
+	Proof
+	Coefficients []secp256k1.Fn
+	IndexSubset  []uint16
+}
+
+func commitmentsMsgLen(t int) int {
+	return 1 + t*secp256k1.PointSizeMarshalled + ProofLenMarshalled
+}
+
+func shareMsgLen() int {
+	return 1 + secp256k1.FnSizeMarshalled
+}
+
+func (info *DKGCatchUpInfo) SerialisedMessage(index uint16) []byte {
+	t := len(info.Coefficients)
+
+	l := commitmentsMsgLen(t) + shareMsgLen() + len(info.IndexSubset)*2
+	bs := make([]byte, l)
+	rem := bs
+
+	rem[0] = DKGTypeContribution
+	rem = rem[1:]
+
+	info.Proof.PutBytes(rem)
+	rem = rem[ProofLenMarshalled:]
+
+	for i := range info.Commitments {
+		info.Commitments[i].PutBytes(rem)
+		rem = rem[secp256k1.PointSizeMarshalled:]
+	}
+
+	rem[0] = DKGTypeShare
+	rem = rem[1:]
+	share := computeShare(index, info.Coefficients)
+	share.PutB32(rem)
+	rem = rem[secp256k1.FnSizeMarshalled:]
+
+	for i := range info.IndexSubset {
+		binary.LittleEndian.PutUint16(rem, info.IndexSubset[i])
+		rem = rem[2:]
+	}
+
+	return bs
+}
+
+type DKGCatchUpMessage struct {
+	IndexSubset    []uint16
+	CommitmentsMsg DKGMessage
+	ShareMsg       DKGMessage
+}
+
+func DKGDeserialiseCatchUpMessage(bs []byte, n, t int) (DKGCatchUpMessage, error) {
+	commitmentsMsgLen := commitmentsMsgLen(t)
+	shareMsgLen := shareMsgLen()
+
+	minLen := commitmentsMsgLen + shareMsgLen + t*2
+	maxLen := commitmentsMsgLen + shareMsgLen + n*2
+
+	if len(bs) < minLen {
+		return DKGCatchUpMessage{}, fmt.Errorf("serialised message too short: expected at least %v bytes, got %v", minLen, len(bs))
+	}
+
+	if len(bs) > maxLen {
+		return DKGCatchUpMessage{}, fmt.Errorf("serialised message too long: expected at most %v bytes, got %v", maxLen, len(bs))
+	}
+
+	commitmentsMsg := DKGMessage{
+		Type: bs[0],
+		Data: bs[1:commitmentsMsgLen],
+	}
+	bs = bs[commitmentsMsgLen:]
+
+	shareMsg := DKGMessage{
+		Type: bs[0],
+		Data: bs[1:shareMsgLen],
+	}
+	bs = bs[shareMsgLen:]
+
+	numIndices := len(bs) / 2
+	indexSubset := make([]uint16, numIndices)
+	for i := range indexSubset {
+		indexSubset[i] = binary.LittleEndian.Uint16(bs)
+		bs = bs[2:]
+	}
+
+	return DKGCatchUpMessage{
+		IndexSubset:    indexSubset,
+		CommitmentsMsg: commitmentsMsg,
+		ShareMsg:       shareMsg,
+	}, nil
 }
