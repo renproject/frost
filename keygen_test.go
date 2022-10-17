@@ -74,7 +74,7 @@ var _ = Describe("DKG", func() {
 			checkOutputs(outputs, n, t, indices)
 		})
 
-		FIt("should allow a node to catch up if it was offline", func() {
+		It("should allow a node to catch up if it was offline", func() {
 			n := 10
 			t := 5
 

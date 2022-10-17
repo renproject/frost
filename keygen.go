@@ -316,10 +316,6 @@ func transitionToStep2(state *DKGState, info *DKGCatchUpInfo, ownIndex uint16, i
 
 	state.Step = 2
 
-	if len(state.Shares) == len(state.Commitments) {
-		return true, computeOutputs(state, indices, ownIndex), nil, nil
-	}
-
 	if info != nil {
 		info.IndexSubset = make([]uint16, 0, len(state.Commitments))
 		for index := range state.Commitments {
@@ -327,6 +323,10 @@ func transitionToStep2(state *DKGState, info *DKGCatchUpInfo, ownIndex uint16, i
 		}
 
 		sort.Slice(info.IndexSubset, func(i, j int) bool { return info.IndexSubset[i] < info.IndexSubset[j] })
+	}
+
+	if len(state.Shares) == len(state.Commitments) {
+		return true, computeOutputs(state, indices, ownIndex), shareMessages, nil
 	}
 
 	return false, DKGOutput{}, shareMessages, nil
