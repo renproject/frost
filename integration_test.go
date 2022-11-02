@@ -27,14 +27,14 @@ var _ = Describe("Integration", func() {
 			outputs := executeDKG(dkgPlayers, step1Timeout)
 			checkOutputs(outputs, n, t, indices)
 
-			players, aggregator, aggregatedPubKey, _, _ := createPlayers(n, t, bip340)
-
 			var msgHash [32]byte
 			copy(msgHash[:], "good evening")
 
+			players, aggregator, aggregatedPubKey, _, _ := createPlayers(n, t, msgHash, bip340)
+
 			sig := executeThresholdSignature(&aggregator, players, msgHash)
 
-			Expect(sigIsValid(&sig, &msgHash, &aggregatedPubKey, bip340)).To(BeTrue())
+			Expect(frost.SigIsValid(&sig.r, &sig.s, &msgHash, &aggregatedPubKey, bip340)).To(BeTrue())
 		})
 	})
 })

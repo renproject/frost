@@ -34,7 +34,7 @@ type Proof struct {
 
 func (p *Proof) PutBytes(dst []byte) {
 	p.R.PutBytes(dst[0:secp256k1.PointSizeMarshalled])
-	p.Mu.PutB32(dst[secp256k1.PointSizeMarshalled : secp256k1.PointSizeMarshalled+secp256k1.FnSizeMarshalled])
+	p.Mu.PutB32(dst[secp256k1.PointSizeMarshalled:ProofLenMarshalled])
 }
 
 func (p *Proof) SetBytes(bs []byte) error {
@@ -218,7 +218,9 @@ func DKGHandleMessage(state *DKGState, info *DKGCatchUpInfo, ownIndex uint16, in
 	n := len(indices)
 
 	switch message.Type {
+
 	case DKGTypeContribution:
+
 		if state.Step != 1 {
 			return false, DKGOutput{}, nil, nil
 		}
@@ -257,7 +259,9 @@ func DKGHandleMessage(state *DKGState, info *DKGCatchUpInfo, ownIndex uint16, in
 		} else {
 			return false, DKGOutput{}, nil, nil
 		}
+
 	case DKGTypeShare:
+
 		if len(message.Data) != secp256k1.FnSizeMarshalled {
 			return false, DKGOutput{}, nil, fmt.Errorf("invalid share message length: expected %v, got %v", secp256k1.FnSizeMarshalled, len(message.Data))
 		}

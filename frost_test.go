@@ -19,18 +19,19 @@ var _ = Describe("frost", func() {
 	t := n / 2
 
 	bip340s := []bool{true, false}
+
 	for _, bip340 := range bip340s {
 		Context(fmt.Sprintf("signing with bip340 = %v", bip340), func() {
 			bip340 := bip340
 			It("should sign successfully", func() {
-				players, aggregator, aggregatedPubKey, _, _ := createPlayers(n, t, bip340)
-
 				var msgHash [32]byte
 				copy(msgHash[:], "good evening")
 
+				players, aggregator, aggregatedPubKey, _, _ := createPlayers(n, t, msgHash, bip340)
+
 				sig := executeThresholdSignature(&aggregator, players, msgHash)
 
-				Expect(sigIsValid(&sig, &msgHash, &aggregatedPubKey, bip340)).To(BeTrue())
+				Expect(frost.SigIsValid(&sig.r, &sig.s, &msgHash, &aggregatedPubKey, bip340)).To(BeTrue())
 			})
 
 			Context("invalid messages", func() {
@@ -46,7 +47,7 @@ var _ = Describe("frost", func() {
 					for ty := 0; ty < 256; ty++ {
 						ty := uint8(ty)
 						if ty != frost.TypeCommitmentRequest && ty != frost.TypeContributions {
-							_, err := frost.HandleMessage(frost.Message{Type: ty}, &state, index, &privKeyShare, &pubKey, 10, t, true, bip340)
+							_, err := frost.HandleMessage(frost.Message{Type: ty}, &state, index, &privKeyShare, &pubKey, nil, 10, t, true, bip340)
 							Expect(err).To(HaveOccurred())
 						}
 
@@ -58,40 +59,40 @@ var _ = Describe("frost", func() {
 				})
 
 				Specify("players should reject messages that are not from the current aggregator", func() {
-					players, _, _, _, _ := createPlayers(n, t, bip340)
-
 					var msgHash [32]byte
 					copy(msgHash[:], "good evening")
 
+					players, _, _, _, _ := createPlayers(n, t, msgHash, bip340)
+
 					msg := frost.Message{Type: frost.TypeCommitmentRequest}
 					for i := range players {
-						_, err := frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, false, bip340)
+						_, err := frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, false, bip340)
 						Expect(err).To(HaveOccurred())
 					}
 				})
 
 				Specify("players should reject duplicate commitment requests", func() {
-					players, _, _, _, _ := createPlayers(n, t, bip340)
-
 					var msgHash [32]byte
 					copy(msgHash[:], "good evening")
 
+					players, _, _, _, _ := createPlayers(n, t, msgHash, bip340)
+
 					msg := frost.Message{Type: frost.TypeCommitmentRequest}
 					for i := range players {
-						_, err := frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+						_, err := frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 						if err != nil {
 							panic(err)
 						}
-						_, err = frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+						_, err = frost.HandleMessage(msg, &players[i].state, players[i].index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 						Expect(err).To(HaveOccurred())
 					}
 				})
 
 				Specify("the aggregator should reject commitments that have invalid data", func() {
-					_, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, bip340)
-
 					var msgHash [32]byte
 					copy(msgHash[:], "good evening")
+
+					_, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, msgHash, bip340)
 
 					msg := frost.Message{Type: frost.TypeCommitment, Data: nil}
 					index := subset[0]
@@ -123,16 +124,16 @@ var _ = Describe("frost", func() {
 				})
 
 				Specify("the aggregator should reject messages from players not in the chosen subset", func() {
-					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, bip340)
-
 					var msgHash [32]byte
 					copy(msgHash[:], "good evening")
+
+					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, msgHash, bip340)
 
 					msg := frost.Message{Type: frost.TypeCommitmentRequest}
 					for i := range players {
 						index := players[i].index
 						if !isElementOf(index, subset) {
-							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -144,16 +145,16 @@ var _ = Describe("frost", func() {
 				})
 
 				Specify("the aggregator should reject duplicate commitments", func() {
-					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, bip340)
-
 					var msgHash [32]byte
 					copy(msgHash[:], "good evening")
+
+					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, msgHash, bip340)
 
 					msg := frost.Message{Type: frost.TypeCommitmentRequest}
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -167,17 +168,17 @@ var _ = Describe("frost", func() {
 				})
 
 				Specify("players should reject invalid proposals", func() {
-					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, bip340)
-
 					var msgHash [32]byte
 					copy(msgHash[:], "good evening")
+
+					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, msgHash, bip340)
 
 					var proposalCreated bool
 					msg := frost.Message{Type: frost.TypeCommitmentRequest}
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -194,24 +195,24 @@ var _ = Describe("frost", func() {
 
 								// Wrong message data length.
 								badProposal.Data = proposal.Data[:len(proposal.Data)-1]
-								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 								badProposal.Data = append(proposal.Data, byte(0))
-								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Out of range index.
 								copy(data, proposal.Data)
 								binary.LittleEndian.PutUint16(data[32:], uint16(n+1))
 								badProposal.Data = data
-								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Out of order index.
 								copy(data, proposal.Data)
 								binary.LittleEndian.PutUint16(data[32:], uint16(n))
 								badProposal.Data = data
-								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Bad curve point data
@@ -221,7 +222,7 @@ var _ = Describe("frost", func() {
 									firstD[i] = 0
 								}
 								badProposal.Data = data
-								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								copy(data, proposal.Data)
@@ -230,15 +231,15 @@ var _ = Describe("frost", func() {
 									firstE[i] = 0
 								}
 								badProposal.Data = data
-								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(badProposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 
 								// Duplicate proposal.
-								_, err = frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								if err != nil {
 									panic(err)
 								}
-								_, err = frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								_, err = frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								Expect(err).To(HaveOccurred())
 							}
 						}
@@ -248,17 +249,17 @@ var _ = Describe("frost", func() {
 				})
 
 				Specify("the aggregator should reject invalid zs", func() {
-					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, bip340)
-
 					var msgHash [32]byte
 					copy(msgHash[:], "good evening")
+
+					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, msgHash, bip340)
 
 					var proposalCreated bool
 					msg := frost.Message{Type: frost.TypeCommitmentRequest}
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -271,7 +272,7 @@ var _ = Describe("frost", func() {
 							if hasMessage {
 								proposalCreated = true
 
-								zMsg, err := frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+								zMsg, err := frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 								if err != nil {
 									panic(err)
 								}
@@ -308,10 +309,10 @@ var _ = Describe("frost", func() {
 				})
 
 				Specify("the aggregator should reject invalid zs when computing the signature", func() {
-					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, bip340)
-
 					var msgHash [32]byte
 					copy(msgHash[:], "good evening")
+
+					players, aggregator, aggregatedPubKey, params, subset := createPlayers(n, t, msgHash, bip340)
 
 					var proposalCreated bool
 					var proposal frost.Message
@@ -319,7 +320,7 @@ var _ = Describe("frost", func() {
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							response, err := frost.HandleMessage(msg, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -337,7 +338,7 @@ var _ = Describe("frost", func() {
 					for i := range players {
 						index := players[i].index
 						if isElementOf(index, subset) {
-							zMsg, err := frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, n, t, true, bip340)
+							zMsg, err := frost.HandleMessage(proposal, &players[i].state, index, &players[i].privKeyShare, &players[i].pubKey, msgHash[:], n, t, true, bip340)
 							if err != nil {
 								panic(err)
 							}
@@ -359,7 +360,7 @@ var _ = Describe("frost", func() {
 	}
 })
 
-func createPlayers(n, t int, bip340 bool) ([]player, sa, secp256k1.Point, frost.InstanceParameters, []uint16) {
+func createPlayers(n, t int, msgHash [32]byte, bip340 bool) ([]player, sa, secp256k1.Point, frost.InstanceParameters, []uint16) {
 	indices := sequentialIndices(n)
 	_, aggregatedPubKey, privKeyShares, pubKeyShares := createDistributedKey(indices, t, bip340)
 
@@ -373,6 +374,7 @@ func createPlayers(n, t int, bip340 bool) ([]player, sa, secp256k1.Point, frost.
 			privKeyShare: privKeyShares[i],
 			pubKey:       aggregatedPubKey,
 			bip340:       bip340,
+			msgHash:      msgHash,
 		}
 	}
 
@@ -385,6 +387,8 @@ func createPlayers(n, t int, bip340 bool) ([]player, sa, secp256k1.Point, frost.
 
 		state: frost.NewSAState(t),
 	}
+
+	aggregator.state.Reset(msgHash)
 
 	return players, aggregator, aggregatedPubKey, params, subset
 }
@@ -521,12 +525,13 @@ type player struct {
 	privKeyShare secp256k1.Fn
 	pubKey       secp256k1.Point
 	bip340       bool
+	msgHash      [32]byte
 
 	nonce frost.Nonce
 }
 
 func (p *player) handle(m message) frost.Message {
-	msg, err := frost.HandleMessage(m.msg, &p.state, p.index, &p.privKeyShare, &p.pubKey, p.n, p.t, m.from == 0, p.bip340)
+	msg, err := frost.HandleMessage(m.msg, &p.state, p.index, &p.privKeyShare, &p.pubKey, p.msgHash[:], p.n, p.t, m.from == 0, p.bip340)
 	if err != nil {
 		panic(err)
 	}
@@ -591,28 +596,4 @@ func createDistributedKey(indices []uint16, t int, bip340 bool) (secp256k1.Fn, s
 	}
 
 	return privKey, pubKey, privKeyShares, pubKeyShares
-}
-
-func sigIsValid(sig *signature, msgHash *[32]byte, pubKey *secp256k1.Point, bip340 bool) bool {
-	rBytes := make([]byte, 33)
-	pubKeyBytes := make([]byte, 33)
-	sig.r.PutBytes(rBytes)
-	pubKey.PutBytes(pubKeyBytes)
-
-	var e secp256k1.Fn
-	var eBytes []byte
-	if bip340 {
-		eBytes = frost.TaggedHash(rBytes[1:], pubKeyBytes[1:], msgHash[:])
-	} else {
-		eBytes = frost.CHash(rBytes, pubKeyBytes, msgHash[:])
-	}
-	e.SetB32(eBytes)
-	e.Negate(&e)
-
-	var sG, eP, computedR secp256k1.Point
-	sG.BaseExp(&sig.s)
-	eP.Scale(pubKey, &e)
-	computedR.Add(&sG, &eP)
-
-	return computedR.Eq(&sig.r)
 }

@@ -3,6 +3,7 @@ package frost
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -17,7 +18,7 @@ const (
 
 	// Message format:
 	// - [0:33]  serialisation of the point D
-	// - [33:66} serialisation of the point E
+	// - [33:66] serialisation of the point E
 	TypeCommitment = byte(0x01)
 
 	// Message format:
@@ -30,6 +31,11 @@ const (
 	// Message format:
 	// - [0:32] serialisation of the scalar z
 	TypeZ = byte(0x03)
+)
+
+const (
+	CommitmentSizeMarshalled = 2 * secp256k1.PointSizeMarshalled
+	ZSizeMarshalled          = secp256k1.FnSizeMarshalled
 )
 
 type Message struct {
@@ -45,6 +51,20 @@ func (c *Commitment) Bytes(dst []byte) {
 	c.D.PutBytes(dst)
 	dst = dst[secp256k1.PointSizeMarshalled:]
 	c.E.PutBytes(dst)
+}
+
+func (c *Commitment) SetBytes(bs []byte) error {
+	err := c.D.SetBytes(bs)
+	if err != nil {
+		return fmt.Errorf("error deserialising d: %v", err)
+	}
+
+	err = c.E.SetBytes(bs[secp256k1.PointSizeMarshalled:])
+	if err != nil {
+		return fmt.Errorf("error deserialising e: %v", err)
+	}
+
+	return nil
 }
 
 type Nonce struct {
@@ -79,7 +99,7 @@ type SAState struct {
 func NewSAState(t int) SAState {
 	indexedCommitments := make([]IndexedCommitment, t)
 	indexedZs := make([]IndexedZ, t)
-	hashBuffer := make([]byte, 32+t*(2*secp256k1.PointSizeMarshalled+2))
+	hashBuffer := make([]byte, 32+t*(CommitmentSizeMarshalled+2))
 	rsBuffer := make([]secp256k1.Point, t)
 
 	return SAState{
@@ -140,12 +160,13 @@ type InstanceParameters struct {
 // some checks and ordering the data as needed. The input slices are not
 // modified, instead they are copied into new slices in the struct.
 // Assumptions:
-//     - The indices for the n players are the numbers 1, 2, ..., n.
-//     - There are no duplicate indices.
-//     - The player that corresponds to index `i` also corresponds to the pubkey share `allPubKeyShares[i-1]`.
+//   - The indices for the n players are the numbers 1, 2, ..., n.
+//   - There are no duplicate indices.
+//   - The player that corresponds to index `i` also corresponds to the pubkey share `allPubKeyShares[i-1]`.
+//
 // Panics:
-//     - If there are indices that are out of range.
-//     - If there are duplicate indices.
+//   - If there are indices that are out of range.
+//   - If there are duplicate indices.
 func NewInstanceParameters(inds []uint16, allPubKeyShares []secp256k1.Point) InstanceParameters {
 	indices := make([]uint16, len(inds))
 	copy(indices, inds)
@@ -187,7 +208,7 @@ func SAHandleCommitment(state *SAState, subset []uint16, from uint16, commitment
 		return fmt.Errorf("received commitment from player not in subset: from: %v", from)
 	}
 
-	baseIndex := 32 + offset*(2+2*secp256k1.PointSizeMarshalled)
+	baseIndex := 32 + offset*(2+CommitmentSizeMarshalled)
 
 	// If the commitment is unset, then the player index in the buffer will be
 	// zero.
@@ -203,15 +224,9 @@ func SAHandleCommitment(state *SAState, subset []uint16, from uint16, commitment
 	var commitment IndexedCommitment
 
 	commitment.Index = from
-
-	err := commitment.D.SetBytes(commitmentBytes)
+	err := commitment.Commitment.SetBytes(commitmentBytes)
 	if err != nil {
-		return fmt.Errorf("error deserialising d: %v", err)
-	}
-
-	err = commitment.E.SetBytes(commitmentBytes[secp256k1.PointSizeMarshalled:])
-	if err != nil {
-		return fmt.Errorf("error deserialising e: %v", err)
+		return fmt.Errorf("error deserialising commitment: %v", err)
 	}
 
 	binary.LittleEndian.PutUint16(state.HashBuffer[baseIndex:], from)
@@ -294,12 +309,12 @@ func SAComputeSignature(state *SAState, y *secp256k1.Point, yis []secp256k1.Poin
 
 // SAHandleMessage performs the message handling logic for the aggregator. The
 // return parameters are:
-//     - bool representing whether the signature is complete
-//     - r value of the signature if it is completed
-//     - s value of the signature if it is completed
-//     - bool representing whether there is a message that needs to be sent
-//     - message to be sent, which should be sent to all players in the subset
-//       for the current signature execution
+//   - bool representing whether the signature is complete
+//   - r value of the signature if it is completed
+//   - s value of the signature if it is completed
+//   - bool representing whether there is a message that needs to be sent
+//   - message to be sent, which should be sent to all players in the subset
+//     for the current signature execution
 func SAHandleMessage(msg Message, from uint16, state *SAState, y *secp256k1.Point, params InstanceParameters, bip340 bool) (bool, secp256k1.Point, secp256k1.Fn, bool, Message, error) {
 	t := len(params.Indices)
 
@@ -358,25 +373,38 @@ func RandomNonceCommitmentPair(state *State) (Commitment, error) {
 	gd.BaseExp(&d)
 	ge.BaseExp(&e)
 
-	state.Nonce = Nonce{D: d, E: e}
+	nonce, commitment := NewNonceAndCommitment()
 
-	return Commitment{D: gd, E: ge}, nil
+	state.Nonce = nonce
+
+	return commitment, nil
+}
+
+func NewNonceAndCommitment() (Nonce, Commitment) {
+	d, e := secp256k1.RandomFn(), secp256k1.RandomFn()
+
+	var gd, ge secp256k1.Point
+	gd.BaseExp(&d)
+	ge.BaseExp(&e)
+
+	return Nonce{D: d, E: e}, Commitment{D: gd, E: ge}
 }
 
 // HandleSAProposal performs the message handling logic for a proposal from the
 // aggregator.
-func HandleSAProposal(state *State, si *secp256k1.Fn, y *secp256k1.Point, index uint16, n, t int, msgBytes []byte, bip340 bool) (secp256k1.Fn, error) {
-	if state.Done {
-		return secp256k1.Fn{}, errors.New("already handled contributions")
-	}
-
-	commitmentSize := 2 + 2*secp256k1.PointSizeMarshalled
+func HandleSAProposal(nonce Nonce, si *secp256k1.Fn, y *secp256k1.Point, msgHash []byte, index uint16, n, t int, msgBytes []byte, bip340 bool) (secp256k1.Fn, error) {
+	commitmentSize := 2 + CommitmentSizeMarshalled
 	if len(msgBytes) != commitmentSize*t+32 {
 		return secp256k1.Fn{}, fmt.Errorf("invalid commitment list size %v should be %v", len(msgBytes), commitmentSize*t+32)
 	}
 
+	for i := range msgHash {
+		if msgHash[i] != msgBytes[i] {
+			return secp256k1.Fn{}, fmt.Errorf("invalid message hash in aggregator proposal: expected %v, got %v", hex.EncodeToString(msgHash), hex.EncodeToString(msgBytes[:32]))
+		}
+	}
+
 	byteScanner := msgBytes
-	msgHash := byteScanner[:32]
 	byteScanner = byteScanner[32:]
 
 	// @Safety: The following iterates through the message bytes and for each
@@ -435,14 +463,12 @@ func HandleSAProposal(state *State, si *secp256k1.Fn, y *secp256k1.Point, index 
 
 	r, rho := computeRAndRho(commitments, msgBytes, index)
 	if bip340 && !r.HasEvenY() {
-		state.Nonce.D.Negate(&state.Nonce.D)
-		state.Nonce.E.Negate(&state.Nonce.E)
+		nonce.D.Negate(&nonce.D)
+		nonce.E.Negate(&nonce.E)
 		r.Negate(&r)
 	}
 	c := computeC(&r, y, msgHash, bip340)
-	z := computeZ(index, indices, &state.Nonce.D, &state.Nonce.E, &rho, si, &c)
-
-	state.Done = true
+	z := computeZ(index, indices, &nonce.D, &nonce.E, &rho, si, &c)
 
 	return z, nil
 }
@@ -450,7 +476,7 @@ func HandleSAProposal(state *State, si *secp256k1.Fn, y *secp256k1.Point, index 
 // Handle performs the message handling logic for a player during a signature
 // execution. It returns either a message to be sent to the signature
 // aggregator, or an error.
-func HandleMessage(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn, y *secp256k1.Point, n, t int, isFromAggregator bool, bip340 bool) (Message, error) {
+func HandleMessage(msg Message, state *State, index uint16, privKeyShare *secp256k1.Fn, y *secp256k1.Point, msgHash []byte, n, t int, isFromAggregator bool, bip340 bool) (Message, error) {
 	// @Design: This obviously looks like a weird approach to not accepting
 	// messages that aren't from the aggregator. The reasoning is: we do not
 	// want to assume what "network" form the identities of the players assume,
@@ -477,10 +503,16 @@ func HandleMessage(msg Message, state *State, index uint16, privKeyShare *secp25
 		return Message{Type: TypeCommitment, Data: commitmentBytes[:]}, nil
 
 	case TypeContributions:
-		z, err := HandleSAProposal(state, privKeyShare, y, index, n, t, msg.Data, bip340)
+		if state.Done {
+			return Message{}, errors.New("already handled contributions")
+		}
+
+		z, err := HandleSAProposal(state.Nonce, privKeyShare, y, msgHash, index, n, t, msg.Data, bip340)
 		if err != nil {
 			return Message{}, err
 		}
+
+		state.Done = true
 
 		var zBytes [32]byte
 		z.PutB32(zBytes[:])
