@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -19,7 +20,10 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 
-	n := 30
+	n, err := strconv.Atoi(os.Args[1])
+	if err != nil {
+		fmt.Println("usage: ./bench N - example: ./bench 1000")
+	}
 	t := n / 2
 
 	indices := sequentialIndices(n)
@@ -55,9 +59,16 @@ func main() {
 		panic("invalid signature!")
 	} else {
 		filename := fmt.Sprintf("%v-%v.metrics", n, t)
-		fmt.Println("success! writing metrics to", filename)
+		fmt.Println("success! writing player metrics to", filename)
 		reportMetrics(&aggregator, players, filename)
 	}
+
+	fmt.Println("aggregator metrics:")
+	fmt.Println("  numMsgsSent:", aggregator.numMsgsSent)
+	fmt.Println("  numMsgsReceived:", aggregator.numMsgsReceived)
+	fmt.Println("  uploaded:", aggregator.uploaded)
+	fmt.Println("  downloaded:", aggregator.downloaded)
+	fmt.Println("  totalTime:", aggregator.totalTime)
 }
 
 func randomIndexSubset(indices []uint16, t int) []uint16 {
